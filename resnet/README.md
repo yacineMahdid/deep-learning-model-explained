@@ -149,8 +149,8 @@ In a nutshell, we are passing the parameters we already discussed (i.e. `weights
 
 Let's explore both the `verify` function and the `_resnet` class:
 
-### ResNet18_weights.verify():
-If we do some archeology on the [API documentation](https://pytorch.org/vision/main/_modules/torchvision/models/_api.html) we find that the class being use do verify to make sure that the weights as the proper structure:
+## ResNet18_weights.verify():
+In the [API documentation](https://pytorch.org/vision/main/_modules/torchvision/models/_api.html) we find that the function being called in this instance is checking if the weights have the right class name.
 
 ```python
 class WeightsEnum(Enum):
@@ -174,9 +174,9 @@ class WeightsEnum(Enum):
                 )
         return obj
 ```
-Nothing too critical here, just a good internal safety check
+Nothing too relevant for our understanding of resnet, this is more of a Pytorch specific internal safety check.
 
-### _resnet
+## _resnet
 What we call this internal class for is to do this:
 ```python
 return _resnet(BasicBlock, [2, 2, 2, 2], weights, progress)
