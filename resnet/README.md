@@ -1,13 +1,18 @@
 # Residual Neural Network
--> Link to the paper: https://arxiv.org/abs/1512.03385
+From: "[Deep Residual Learning for Image Recognition](https://arxiv.org/abs/1512.03385)"
 
-We've taken the code from the codebase of [Pytorch in the torchvision library](https://github.com/pytorch/vision/blob/2c127da8b5e2e8f44b50994c6cb931bcca267cfe/torchvision/models/resnet.py#L356)
+**Disclaimer:**
+The code is from the codebase of the Pytorch framework in the [torchvision library](https://github.com/pytorch/vision/blob/2c127da8b5e2e8f44b50994c6cb931bcca267cfe/torchvision/models/resnet.py#L356).
+
+We've trimmed down the resnet.py file for readability and broke down the call stack from the Pytorch API.
+
+This isn't useable code, however it's more understandable.
+
+## Pytorch ResNet API Usage
+In this section we will explore how the resnet neural network is used in the torchvision library.
 
 
-We're breaking down the whole call stack from the pytorch API to the components used.
-
-### ResNet API Usage
-If we look at this example over here in the [Pytorch tutorial documentation](https://pytorch.org/vision/main/auto_examples/others/plot_scripted_tensor_transforms.html#sphx-glr-auto-examples-others-plot-scripted-tensor-transforms-py) we get this part that is fairly interesting:
+If we look at this example in the [Pytorch tutorial documentation](https://pytorch.org/vision/main/auto_examples/others/plot_scripted_tensor_transforms.html#sphx-glr-auto-examples-others-plot-scripted-tensor-transforms-py) we get this snippet of code tha shows how the resnet18 version is used:
 
 ```python
 from torchvision.models import resnet18, ResNet18_Weights
@@ -38,16 +43,15 @@ res = predictor(batch)
 res_scripted = scripted_predictor(batch)
 ```
 
-Let's look at the breakdown of each section:
-
+Let's look at the breakdown of each sections:
 **1. Import**
 ```python
 from torchvision.models import resnet18, ResNet18_Weights
 ```
-
-On the part above, we are importing two element from the model library we will be exploring:
-- resnet18 : the main entry point to build a resnet model
-- ResNet18_Weights : the training weights reproduced from the main paper mentioned above.
+**Highlight:**
+We are importing two element from the model library we will be exploring:
+- `resnet18` : the main entry point to build a resnet model
+- `ResNet18_Weights` : the training weights reproduced from the main paper "[Deep Residual Learning for Image Recognition](https://arxiv.org/abs/1512.03385)"
 
 
 **2. Model Creation**
