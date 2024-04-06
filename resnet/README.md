@@ -44,11 +44,12 @@ res_scripted = scripted_predictor(batch)
 ```
 
 Let's look at the breakdown of each sections:
+
 **1. Import**
 ```python
 from torchvision.models import resnet18, ResNet18_Weights
 ```
-**Highlight:**
+
 We are importing two element from the model library we will be exploring:
 - `resnet18` : the main entry point to build a resnet model
 - `ResNet18_Weights` : the training weights reproduced from the main paper "[Deep Residual Learning for Image Recognition](https://arxiv.org/abs/1512.03385)"
@@ -62,16 +63,20 @@ We are importing two element from the model library we will be exploring:
         self.resnet18 = resnet18(weights=weights, progress=False).eval()
         self.transforms = weights.transforms(antialias=True)
 ```
-The important part from this section is this part:
+
+The important part from this section is this sub-section:
 ```python
         weights = ResNet18_Weights.DEFAULT
         self.resnet18 = resnet18(weights=weights, progress=False).eval()
 ```
-We first get the weights important and pass it to the resnet18 API to create the model with the right pre-trained parameters.
-The parameter of interest for this API is:
 
-- **weights (ResNet18_Weights, optional)** – The pretrained weights to use. See ResNet18_Weights below for more details, and possible values. By default, no pre-trained weights are used.
-- **progress (bool, optional)** – If True, displays a progress bar of the download to stderr. Default is True.
+We first get the weights and pass it to the resnet18 API to create the model with the right pre-trained parameters.
+
+The parameter of interest for this API are:
+
+- **weights (ResNet18_Weights, optional)**: The pretrained weights to use. See ResNet18_Weights below for more details, and possible values. By default, no pre-trained weights are used.
+- **progress (bool, optional)**: If True, displays a progress bar of the download to stderr. Default is True.
+
 *[Taken from the Pytorch documentation](https://pytorch.org/vision/main/models/generated/torchvision.models.resnet18.html)*
 
 **3. Trained Model Useage**
@@ -81,9 +86,9 @@ The parameter of interest for this API is:
 
 Once the model is ready and trained we only need to pass the input `x` and we get the prediction `y`.
 
-So that's pretty much it from the high level overview useage, let's go a bit deeper.
+So that's pretty much it from the high level overview useage, let's go a bit deeper and explore the **resnet18 class**.
 
-### resnet18
+## resnet18
 Isolating the resnet component inside the library we get the following:
 
 ```python
