@@ -86,10 +86,11 @@ The parameter of interest for this API are:
 
 Once the model is ready and trained we only need to pass the input `x` and we get the prediction `y`.
 
-So that's pretty much it from the high level overview useage, let's go a bit deeper and explore the **resnet18 class**.
+So that's pretty much it from the high level overview useage, let's go a bit deeper and explore the **resnet18 function**.
 
 ## resnet18
-Isolating the resnet component inside the library we get the following:
+Isolating the `resnet18` component inside the library we get the following:
+
 
 ```python
 @register_model()
@@ -130,20 +131,25 @@ def resnet18(*, weights: Optional[ResNet18_Weights] = None, progress: bool = Tru
 
 ```
 
-Removing even more parameters that pertain to the library only, we get the following:
+Removing even more parameters that pertain to the library only (like `register_model` and `handle_legacy_interface`), we get the following:
+
 ```python
 def resnet18(weights: Optional[ResNet18_Weights] = None, progress: bool = True):
     weights = ResNet18_Weights.verify(weights)
     return _resnet(BasicBlock, [2, 2, 2, 2], weights, progress)
 ```
+
 Which is much more manageable to understand.
 
-In a nutshell, we are passing the parameters we already discussed then:
+Let's go through the function.
+
+In a nutshell, we are passing the parameters we already discussed (i.e. `weights` and `progress`) then:
 1. We verify if the weights are legit.
 2. Then we call an internal `_resnet` class to start building our resnet with the right parameters.
 
-Let's look at both:
-### ResNet18_weights.verifiy():
+Let's explore both the `verify` function and the `_resnet` class:
+
+### ResNet18_weights.verify():
 If we do some archeology on the [API documentation](https://pytorch.org/vision/main/_modules/torchvision/models/_api.html) we find that the class being use do verify to make sure that the weights as the proper structure:
 
 ```python
