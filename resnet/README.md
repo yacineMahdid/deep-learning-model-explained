@@ -220,7 +220,8 @@ Which means that there is the `ResNet` class that we need to have to investigate
 I know it seems like it's a bit convoluted, but at this point we are getting into the core of resnet. Getting there!
 
 ## ResNet (class)
-This class is the actually interesting one:
+
+The full ResNet code is the following:
 
 ```python
 class ResNet(nn.Module):
@@ -346,14 +347,23 @@ class ResNet(nn.Module):
 ```
 
 Looking generally at the functions we have:
-- `__init__` : The constructor for this class which we called in the previous `_resnet` class
+- `__init__` : The constructor for this class which we called in the previous `_resnet` function
 - `_make_layer`: internal function to build the layers with the right specification
 - `_forward_impl`: the actual implementation of the forward pass
 - `forward`: forward pass that is called by Pytorch during training and evaluation
 
 Let's look at each of the element:
 
-### ResNet : _forward_impl
+## ResNet : forward
+```python
+def forward(self, x: Tensor) -> Tensor:
+        return self._forward_impl(x)
+```
+
+Pretty self explanatory, this is simply a wrapper function over the internal function `_forward_impl` .
+The reason for this structure has to do with Pytorch internals.
+
+## ResNet : _forward_impl
 ```python
     def _forward_impl(self, x: Tensor) -> Tensor:
         # See note [TorchScript super()]
