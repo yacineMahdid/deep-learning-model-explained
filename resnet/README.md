@@ -469,8 +469,48 @@ First off, there will be discrepancy here compared to the original paper as show
 ```
 As they are saying, this change do improve accuracy.
 
+It happens right here:
+```python
+self.conv2 = conv3x3(width, width, stride, groups, dilation)
+```
 Let's break it down like we did for BasicBlock.
 
+## Bottleneck Block | forward
+```python
+    def forward(self, x: Tensor) -> Tensor:
+        identity = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
+
+        out = self.conv3(out)
+        out = self.bn3(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        out = self.relu(out)
+
+        return out
+```
+
+The bottleneck block is as show over here:
+
+![Resnet Bottleneck Block](images/resnet_bottleneck_block.png)
+
+It's exactly the very same structure as before expect we have:
+1. different parameters for the first and last unit (covered in the `__init__`)
+2. 3 units instead of 2.
+
+We are doing the same trick with the identity being added at the end and being downsampled if needs be beforehand.
+
+## Bottleneck Block | `__init__`
 
 ## ResNet (class)
 
