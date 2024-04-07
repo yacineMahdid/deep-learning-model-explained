@@ -219,6 +219,18 @@ Which means that there is the `ResNet` class that we need to have to investigate
 **Quick Note:**
 I know it seems like it's a bit convoluted, but at this point we are getting into the core of resnet. Getting there!
 
+Before looking at the ResNet class, let's investigate the BasicBlock and the Bottleneck block:
+
+## Basic Block and Bottleneck Block:
+The two type of blocks are fairly similar, the only difference is that the Bottleneck block are less performant, but less computationally intensive. They are used mainly in the deeper residual networks like the resnet-50/101/152.
+> [From the Author] Because of concerns on the training time that we can afford, we modify the building block as a bottleneck design. Deeper non-bottleneck ResNets (e.g., Fig. 5 left) also gain accuracy from increased depth (as shown on CIFAR-10), but are not as economical as the bottleneck ResNets. So the usage of bottleneck designs is mainly due to practical considerations.
+
+![ResNet Basic Block and Bottleneck Block](images/resnet_figure_5.png)
+
+Let's look at the `BasicBlock` first.
+
+## BasicBlock
+
 ## ResNet (class)
 
 The full ResNet code is the following:
@@ -413,6 +425,62 @@ The main differences in all size of Residual Neural Network will boils down to h
 Which is where the idea of bypassing connections comes from.
 
 ## ResNet | _make_layer
+The last helper functions used in order to build the full residual neural network is `_make_layer` which is called in the constructor as follows:
+```python
+# ResNet.__init__
+        self.layer1 = self._make_layer(block, 64, layers[0])
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2, dilate=replace_stride_with_dilation[0])
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2, dilate=replace_stride_with_dilation[1])
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=2, dilate=replace_stride_with_dilation[2])
+```
+
+From the inputs two of them are straightforward:
+- **block:** this is either the BasicBlock or Bottleneck as discussed above
+- **planes:** ???????????????
+
+```python
+    def _make_layer(
+        self,
+        block: Type[Union[BasicBlock, Bottleneck]],
+        planes: int,
+        blocks: int,
+        stride: int = 1,
+        dilate: bool = False,
+    ) -> nn.Sequential:
+        norm_layer = self._norm_layer
+        downsample = None
+        previous_dilation = self.dilation
+        if dilate:
+            self.dilation *= stride
+            stride = 1
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                conv1x1(self.inplanes, planes * block.expansion, stride),
+                norm_layer(planes * block.expansion),
+            )
+
+        layers = []
+        layers.append(
+            block(
+                self.inplanes, planes, stride, downsample, self.groups, self.base_width, previous_dilation, norm_layer
+            )
+        )
+        self.inplanes = planes * block.expansion
+        for _ in range(1, blocks):
+            layers.append(
+                block(
+                    self.inplanes,
+                    planes,
+                    groups=self.groups,
+                    base_width=self.base_width,
+                    dilation=self.dilation,
+                    norm_layer=norm_layer,
+                )
+            )
+
+        return nn.Sequential(*layers)
+```
+
 
 # Extra Resource
 - [interesting paper](https://blog.paperspace.com/writing-resnet-from-scratch-in-pytorch/)
