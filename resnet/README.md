@@ -88,7 +88,7 @@ Once the model is ready and trained we only need to pass the input `x` and we ge
 
 So that's pretty much it from the high level overview useage, let's go a bit deeper and explore the **resnet18 function**.
 
-## resnet18
+## resnet18 (API facing function)
 Isolating the `resnet18` component inside the library we get the following:
 
 
@@ -149,7 +149,7 @@ In a nutshell, we are passing the parameters we already discussed (i.e. `weights
 
 Let's explore both the `verify` function and the `_resnet` class:
 
-## ResNet18_weights.verify():
+## ResNet18_weights.verify() (helper function):
 In the [API documentation](https://pytorch.org/vision/main/_modules/torchvision/models/_api.html) we find that the function being called in this instance is checking if the weights have the right class name.
 
 ```python
@@ -176,13 +176,13 @@ class WeightsEnum(Enum):
 ```
 Nothing too relevant for our understanding of resnet, this is more of a Pytorch specific internal safety check.
 
-## _resnet
+## _resnet (internal function)
 What we call this internal class for is to do this:
 ```python
 return _resnet(BasicBlock, [2, 2, 2, 2], weights, progress)
 ```
 
-Let's break it down:
+Let's break open up the function to check what `_resnet` is all about:
 
 ```python
 def _resnet(
@@ -204,18 +204,22 @@ def _resnet(
 ```
 
 We have the following parameters of interest (with unfortunately not much documentation):
-- block :  this is either a BasicBlock or a Bottleneck block like in the paper.
-- layers: layers parameter for yet another core internal model
+- **block** :  this is either a BasicBlock or a Bottleneck block like in the original resnet paper.
+- **layers**: layers parameter for yet another core internal model
+- **weights**: the weights to initalize a pre-trained model.
 
-If we remove the superfluous element for our purpose we get this:
+If we remove the weights checking code and the loading of the weights function we get only this:
 
 ```python
-    model = ResNet(block, layers, **kwargs)
+    model = ResNet(block, layers, weights, **kwargs)
 ```
 
 Which means that there is the `ResNet` class that we need to have to investigate further.
 
-### ResNet
+**Quick Note:**
+I know it seems like it's a bit convoluted, but at this point we are getting into the core of resnet. Getting there!
+
+## ResNet (class)
 This class is the actually interesting one:
 
 ```python
