@@ -229,7 +229,135 @@ The two type of blocks are fairly similar, the only difference is that the Bottl
 
 Let's look at the `BasicBlock` first.
 
-## BasicBlock
+## BasicBlock (class)
+```python
+class BasicBlock(nn.Module):
+    expansion: int = 1
+
+    def __init__(
+        self,
+        inplanes: int,
+        planes: int,
+        stride: int = 1,
+        downsample: Optional[nn.Module] = None,
+        groups: int = 1,
+        base_width: int = 64,
+        dilation: int = 1,
+        norm_layer: Optional[Callable[..., nn.Module]] = None,
+    ) -> None:
+        super().__init__()
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
+        if groups != 1 or base_width != 64:
+            raise ValueError("BasicBlock only supports groups=1 and base_width=64")
+        if dilation > 1:
+            raise NotImplementedError("Dilation > 1 not supported in BasicBlock")
+        # Both self.conv1 and self.downsample layers downsample the input when stride != 1
+        self.conv1 = conv3x3(inplanes, planes, stride)
+        self.bn1 = norm_layer(planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = conv3x3(planes, planes)
+        self.bn2 = norm_layer(planes)
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x: Tensor) -> Tensor:
+        identity = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        out = self.relu(out)
+
+        return out
+```
+Since the blocks have the same overall architecture, but different parameters, the class is fairly straightforward.
+
+The only two components are:
+- **forward**: the forward function used by Pytorch during training and evaluation.
+- **__init__**: the constructor.
+
+Let's look at `forward` first:
+## BasicBlock | forward
+```python
+    def forward(self, x: Tensor) -> Tensor:
+        identity = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        out = self.relu(out)
+
+        return out
+```
+Let's run through this step by step, as this is the crux of the residual neural network architecture and its where the actual "residual" aspect is taking place very subtly.
+
+```python
+        identity = x
+```
+The very first thing we do is to create a variable called identity which is x.
+
+This mimick closely what is happening in the figure 2 of the paper:
+
+![ResNet Figure 2](images/resnet_figure_2.png)
+
+The naming come from the whole idea that if we were adding layers on a neural network and that the smaller neural network was optimal, the only thing that the later layers would have to learn is an identity mapping. Thus making the deeper layer network as good as the smaller one.
+
+**first unit:**
+```python
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+```
+As in the paper, we go convolution with batch normalization followed by relu:
+
+![Residual Basic Block first unit](images/resnet_first_block.png)
+
+**second unit**
+```python
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+```
+We take the output of the first unit and do our second convolution with batch normalization.
+Then if we are in a downsampling layer `conv3 1, conv4 1, and conv5 1 with a stride of 2` in the paper we do our downsampling.
+
+![Resnet basic block second unit](images/resnet_second_block.png)
+
+**the shortcut connection**
+```python
+        out += identity
+        out = self.relu(out)
+```
+This very last element added is the shortcut connection that powers the whole paper. As we can see we are simply adding back the input (or the down-sampled input) to the learned layer before doing our relu.
+
+This means that in the hypothetical scenario that was discussed by the authors where a smaller optimal network had extra layers added, the most optimal thing to do for the bigger network is to just learn the identity function so that it can add the output of the last optimal smaller networ layer.
+
+![Resnet basic block shortcut connection](images/resnet_identity.png)
+
+let's look at the basic block constructor class now.
+
+## BasicBlock | `__init__`
+
+
 
 ## ResNet (class)
 
