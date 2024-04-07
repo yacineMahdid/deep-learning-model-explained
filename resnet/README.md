@@ -354,7 +354,7 @@ Looking generally at the functions we have:
 
 Let's look at each of the element:
 
-## ResNet : forward
+## ResNet | forward
 ```python
 def forward(self, x: Tensor) -> Tensor:
         return self._forward_impl(x)
@@ -363,7 +363,7 @@ def forward(self, x: Tensor) -> Tensor:
 Pretty self explanatory, this is simply a wrapper function over the internal function `_forward_impl` .
 The reason for this structure has to do with Pytorch internals.
 
-## ResNet : _forward_impl
+## ResNet | _forward_impl
 ```python
     def _forward_impl(self, x: Tensor) -> Tensor:
         # See note [TorchScript super()]
@@ -412,7 +412,7 @@ The main differences in all size of Residual Neural Network will boils down to h
 
 Which is where the idea of bypassing connections comes from.
 
-##
+## ResNet | _make_layer
 
 # Extra Resource
 - [interesting paper](https://blog.paperspace.com/writing-resnet-from-scratch-in-pytorch/)
