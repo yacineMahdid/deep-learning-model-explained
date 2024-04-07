@@ -389,18 +389,20 @@ All ResNet no matter their depth have the same structure, shown here:
 
 We have:
 1. `conv1`: convolutional layer
-2. `bn1`: batch normalization
+2. `bn1`: using batch normalization
 3. `relu`: with relu
-4. `maxpool`: maxpooling layer
+4. `maxpool`: then a maxpooling layer
 
-Then we have the four "chunky" layers that house the sub layers:
-6. `layer1 to 4`
+Followed by four "chunky" layers that house the residual blocks:
 
-Finally we finish up with:
-7. `avgpool`: average pooling layer with a flattening to 1 dimension
-8. `fc`: fully connected layer for the output
+5. `layer1 to 4`
 
-The main differences in the ResNet will boils down to how the middle portion is built out:
+Finally, after going through the blocks we always finish up with:
+
+6. `avgpool`: average pooling layer with a flattening to 1 dimension
+7. `fc`: fully connected layer for the output
+
+The main differences in all size of Residual Neural Network will boils down to how the middle portion is built out:
 ```python
         x = self.layer1(x)
         x = self.layer2(x)
@@ -408,9 +410,9 @@ The main differences in the ResNet will boils down to how the middle portion is 
         x = self.layer4(x)
 ```
 
-Which is where the idea of bypassing layers comes from.
+Which is where the idea of bypassing connections comes from.
 
-### 
+##
 
 # Extra Resource
 - [interesting paper](https://blog.paperspace.com/writing-resnet-from-scratch-in-pytorch/)
