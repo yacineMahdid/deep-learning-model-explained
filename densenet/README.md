@@ -87,96 +87,10 @@ def _densenet(
 - `block config`: for the 121 densenet it's: (6, 12, 24, 16) which represent how many time each sub-block types are repeated.
 - `num_init_features`: 64 which is the number of filters to learn in the first convolution layer
 
-We then jump into the actual DenseNet class which create the architecture
-
-## DenseNet
-```python
-class DenseNet(nn.Module):
-    r"""Densenet-BC model class, based on
-    `"Densely Connected Convolutional Networks" <https://arxiv.org/pdf/1608.06993.pdf>`_.
-
-    Args:
-        growth_rate (int) - how many filters to add each layer (`k` in paper)
-        block_config (list of 4 ints) - how many layers in each pooling block
-        num_init_features (int) - the number of filters to learn in the first convolution layer
-        bn_size (int) - multiplicative factor for number of bottle neck layers
-          (i.e. bn_size * k features in the bottleneck layer)
-        drop_rate (float) - dropout rate after each dense layer
-        num_classes (int) - number of classification classes
-        memory_efficient (bool) - If True, uses checkpointing. Much more memory efficient,
-          but slower. Default: *False*. See `"paper" <https://arxiv.org/pdf/1707.06990.pdf>`_.
-    """
-
-    def __init__(
-        self,
-        growth_rate: int = 32,
-        block_config: Tuple[int, int, int, int] = (6, 12, 24, 16),
-        num_init_features: int = 64,
-        bn_size: int = 4,
-        drop_rate: float = 0,
-        num_classes: int = 1000,
-        memory_efficient: bool = False,
-    ) -> None:
-
-        super().__init__()
-        _log_api_usage_once(self)
-
-        # First convolution
-        self.features = nn.Sequential(
-            OrderedDict(
-                [
-                    ("conv0", nn.Conv2d(3, num_init_features, kernel_size=7, stride=2, padding=3, bias=False)),
-                    ("norm0", nn.BatchNorm2d(num_init_features)),
-                    ("relu0", nn.ReLU(inplace=True)),
-                    ("pool0", nn.MaxPool2d(kernel_size=3, stride=2, padding=1)),
-                ]
-            )
-        )
-
-        # Each denseblock
-        num_features = num_init_features
-        for i, num_layers in enumerate(block_config):
-            block = _DenseBlock(
-                num_layers=num_layers,
-                num_input_features=num_features,
-                bn_size=bn_size,
-                growth_rate=growth_rate,
-                drop_rate=drop_rate,
-                memory_efficient=memory_efficient,
-            )
-            self.features.add_module("denseblock%d" % (i + 1), block)
-            num_features = num_features + num_layers * growth_rate
-            if i != len(block_config) - 1:
-                trans = _Transition(num_input_features=num_features, num_output_features=num_features // 2)
-                self.features.add_module("transition%d" % (i + 1), trans)
-                num_features = num_features // 2
-
-        # Final batch norm
-        self.features.add_module("norm5", nn.BatchNorm2d(num_features))
-
-        # Linear layer
-        self.classifier = nn.Linear(num_features, num_classes)
-
-        # Official init from torch repo.
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight)
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Linear):
-                nn.init.constant_(m.bias, 0)
-
-    def forward(self, x: Tensor) -> Tensor:
-        features = self.features(x)
-        out = F.relu(features, inplace=True)
-        out = F.adaptive_avg_pool2d(out, (1, 1))
-        out = torch.flatten(out, 1)
-        out = self.classifier(out)
-        return out
-```
-
-**TODO: Whole bunch of stuff to figure out here**
+Before we jump into the DenseNet class, let's look at all the different building block we will use. Namely:
+- Transition Layer
+- DenseLayer
+- DenseBlock
 
 ## Transition Layers
 The transition layer is like in the paper, mainly used to resize the input/output from one block to another.
@@ -300,7 +214,7 @@ class _DenseLayer(nn.Module):
         return new_features
 ```
 Let's unroll this section by section
-### DenseNet : __init__
+### DenseLayer : __init__
 To start, as we look at the constructor we get the following:
 
 ```python
@@ -323,7 +237,7 @@ Which simply define all of the function we will need mainly for the 1x1 convolut
 
 Let's take a look at the forward pass what is happening on a complete flow.
 
-### DenseNet : forward
+### DenseLayer : forward
 ```python
     def forward(self, input: Tensor) -> Tensor:  # noqa: F811
         prev_features = input
@@ -344,7 +258,7 @@ The recipe here is simple during the forward pass:
 - finally, if we need to then we do drop out.
 
 Let's take a look at the bottleneck pass.
-### DenseNet : bn_function
+### DenseLayer : bn_function
 
 We have the following simple function
 ```python
@@ -435,3 +349,94 @@ Let's look at both function
     - concatenating the new feature to the old ones
     - shove these features to the next layer
     - repeat throughout all DenseLayer
+
+## DenseNet
+```python
+class DenseNet(nn.Module):
+    r"""Densenet-BC model class, based on
+    `"Densely Connected Convolutional Networks" <https://arxiv.org/pdf/1608.06993.pdf>`_.
+
+    Args:
+        growth_rate (int) - how many filters to add each layer (`k` in paper)
+        block_config (list of 4 ints) - how many layers in each pooling block
+        num_init_features (int) - the number of filters to learn in the first convolution layer
+        bn_size (int) - multiplicative factor for number of bottle neck layers
+          (i.e. bn_size * k features in the bottleneck layer)
+        drop_rate (float) - dropout rate after each dense layer
+        num_classes (int) - number of classification classes
+        memory_efficient (bool) - If True, uses checkpointing. Much more memory efficient,
+          but slower. Default: *False*. See `"paper" <https://arxiv.org/pdf/1707.06990.pdf>`_.
+    """
+
+    def __init__(
+        self,
+        growth_rate: int = 32,
+        block_config: Tuple[int, int, int, int] = (6, 12, 24, 16),
+        num_init_features: int = 64,
+        bn_size: int = 4,
+        drop_rate: float = 0,
+        num_classes: int = 1000,
+        memory_efficient: bool = False,
+    ) -> None:
+
+        super().__init__()
+        _log_api_usage_once(self)
+
+        # First convolution
+        self.features = nn.Sequential(
+            OrderedDict(
+                [
+                    ("conv0", nn.Conv2d(3, num_init_features, kernel_size=7, stride=2, padding=3, bias=False)),
+                    ("norm0", nn.BatchNorm2d(num_init_features)),
+                    ("relu0", nn.ReLU(inplace=True)),
+                    ("pool0", nn.MaxPool2d(kernel_size=3, stride=2, padding=1)),
+                ]
+            )
+        )
+
+        # Each denseblock
+        num_features = num_init_features
+        for i, num_layers in enumerate(block_config):
+            block = _DenseBlock(
+                num_layers=num_layers,
+                num_input_features=num_features,
+                bn_size=bn_size,
+                growth_rate=growth_rate,
+                drop_rate=drop_rate,
+                memory_efficient=memory_efficient,
+            )
+            self.features.add_module("denseblock%d" % (i + 1), block)
+            num_features = num_features + num_layers * growth_rate
+            if i != len(block_config) - 1:
+                trans = _Transition(num_input_features=num_features, num_output_features=num_features // 2)
+                self.features.add_module("transition%d" % (i + 1), trans)
+                num_features = num_features // 2
+
+        # Final batch norm
+        self.features.add_module("norm5", nn.BatchNorm2d(num_features))
+
+        # Linear layer
+        self.classifier = nn.Linear(num_features, num_classes)
+
+        # Official init from torch repo.
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x: Tensor) -> Tensor:
+        features = self.features(x)
+        out = F.relu(features, inplace=True)
+        out = F.adaptive_avg_pool2d(out, (1, 1))
+        out = torch.flatten(out, 1)
+        out = self.classifier(out)
+        return out
+```
+
+Let's first off look at the init function where most of the activity is happening:
+
+### DenseNet : __init__
