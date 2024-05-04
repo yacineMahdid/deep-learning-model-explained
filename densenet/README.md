@@ -85,7 +85,7 @@ def _densenet(
 
 - `growth rate`: (k) in the paper was : 32
 - `block config`: for the 121 densenet it's: (6, 12, 24, 16) which represent how many time each sub-block types are repeated.
-- `num_init_features`: 64 **TODO: WHAT IS THIS**?
+- `num_init_features`: 64 which is the number of filters to learn in the first convolution layer
 
 We then jump into the actual DenseNet class which create the architecture
 
@@ -175,3 +175,263 @@ class DenseNet(nn.Module):
         out = self.classifier(out)
         return out
 ```
+
+**TODO: Whole bunch of stuff to figure out here**
+
+## Transition Layers
+The transition layer is like in the paper, mainly used to resize the input/output from one block to another.
+```python
+class _Transition(nn.Sequential):
+    def __init__(self, num_input_features: int, num_output_features: int) -> None:
+        super().__init__()
+        self.norm = nn.BatchNorm2d(num_input_features)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv = nn.Conv2d(num_input_features, num_output_features, kernel_size=1, stride=1, bias=False)
+        self.pool = nn.AvgPool2d(kernel_size=2, stride=2)
+```
+The recipe for the transition layer named`BN-ReLU-Conv(1×1)`here is:
+1. Batch normalization
+2. RELU
+3. 1x1 conv
+4. 2x2 average pooling with a stride of 2
+
+
+## DenseLayer
+Dense Layer is contained within a given dense block and is the unit that is repeated multiple time.
+```python
+class _DenseLayer(nn.Module):
+    def __init__(
+        self, num_input_features: int, growth_rate: int, bn_size: int, drop_rate: float, memory_efficient: bool = False
+    ) -> None:
+        super().__init__()
+        self.norm1 = nn.BatchNorm2d(num_input_features)
+        self.relu1 = nn.ReLU(inplace=True)
+        self.conv1 = nn.Conv2d(num_input_features, bn_size * growth_rate, kernel_size=1, stride=1, bias=False)
+
+        self.norm2 = nn.BatchNorm2d(bn_size * growth_rate)
+        self.relu2 = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(bn_size * growth_rate, growth_rate, kernel_size=3, stride=1, padding=1, bias=False)
+
+        self.drop_rate = float(drop_rate)
+        self.memory_efficient = memory_efficient
+
+    def bn_function(self, inputs: List[Tensor]) -> Tensor:
+        concated_features = torch.cat(inputs, 1)
+        bottleneck_output = self.conv1(self.relu1(self.norm1(concated_features)))  # noqa: T484
+        return bottleneck_output
+
+    # todo: rewrite when torchscript supports any
+    def any_requires_grad(self, input: List[Tensor]) -> bool:
+        for tensor in input:
+            if tensor.requires_grad:
+                return True
+        return False
+
+    @torch.jit.unused  # noqa: T484
+    def call_checkpoint_bottleneck(self, input: List[Tensor]) -> Tensor:
+        def closure(*inputs):
+            return self.bn_function(inputs)
+
+        return cp.checkpoint(closure, *input, use_reentrant=False)
+
+    @torch.jit._overload_method  # noqa: F811
+    def forward(self, input: List[Tensor]) -> Tensor:  # noqa: F811
+        pass
+
+    @torch.jit._overload_method  # noqa: F811
+    def forward(self, input: Tensor) -> Tensor:  # noqa: F811
+        pass
+
+    # torchscript does not yet support *args, so we overload method
+    # allowing it to take either a List[Tensor] or single Tensor
+    def forward(self, input: Tensor) -> Tensor:  # noqa: F811
+        if isinstance(input, Tensor):
+            prev_features = [input]
+        else:
+            prev_features = input
+
+        if self.memory_efficient and self.any_requires_grad(prev_features):
+            if torch.jit.is_scripting():
+                raise Exception("Memory Efficient not supported in JIT")
+
+            bottleneck_output = self.call_checkpoint_bottleneck(prev_features)
+        else:
+            bottleneck_output = self.bn_function(prev_features)
+
+        new_features = self.conv2(self.relu2(self.norm2(bottleneck_output)))
+        if self.drop_rate > 0:
+            new_features = F.dropout(new_features, p=self.drop_rate, training=self.training)
+        return new_features
+```
+
+If we remove all of the optimization code (which are great, but not too useful to understand the architecture) we get:
+```python
+class _DenseLayer(nn.Module):
+    def __init__(
+        self, num_input_features: int, growth_rate: int, bn_size: int, drop_rate: float, memory_efficient: bool = False
+    ) -> None:
+        super().__init__()
+        self.norm1 = nn.BatchNorm2d(num_input_features)
+        self.relu1 = nn.ReLU(inplace=True)
+        self.conv1 = nn.Conv2d(num_input_features, bn_size * growth_rate, kernel_size=1, stride=1, bias=False)
+
+        self.norm2 = nn.BatchNorm2d(bn_size * growth_rate)
+        self.relu2 = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(bn_size * growth_rate, growth_rate, kernel_size=3, stride=1, padding=1, bias=False)
+
+        self.drop_rate = float(drop_rate)
+        self.memory_efficient = memory_efficient
+
+    def bn_function(self, inputs: List[Tensor]) -> Tensor:
+        concated_features = torch.cat(inputs, 1)
+        bottleneck_output = self.conv1(self.relu1(self.norm1(concated_features)))  # noqa: T484
+        return bottleneck_output
+    
+
+    def forward(self, input: Tensor) -> Tensor:  # noqa: F811
+        prev_features = input
+
+        bottleneck_output = self.bn_function(prev_features)
+        
+        new_features = self.conv2(self.relu2(self.norm2(bottleneck_output)))
+
+        if self.drop_rate > 0:
+            new_features = F.dropout(new_features, p=self.drop_rate, training=self.training)
+        return new_features
+```
+Let's unroll this section by section
+### DenseNet : __init__
+To start, as we look at the constructor we get the following:
+
+```python
+    def __init__(
+        self, num_input_features: int, growth_rate: int, bn_size: int, drop_rate: float, memory_efficient: bool = False
+    ) -> None:
+        super().__init__()
+        self.norm1 = nn.BatchNorm2d(num_input_features)
+        self.relu1 = nn.ReLU(inplace=True)
+        self.conv1 = nn.Conv2d(num_input_features, bn_size * growth_rate, kernel_size=1, stride=1, bias=False)
+
+        self.norm2 = nn.BatchNorm2d(bn_size * growth_rate)
+        self.relu2 = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(bn_size * growth_rate, growth_rate, kernel_size=3, stride=1, padding=1, bias=False)
+
+        self.drop_rate = float(drop_rate)
+        self.memory_efficient = memory_efficient
+```
+Which simply define all of the function we will need mainly for the 1x1 convolution and 3x3 convolution.
+
+Let's take a look at the forward pass what is happening on a complete flow.
+
+### DenseNet : forward
+```python
+    def forward(self, input: Tensor) -> Tensor:  # noqa: F811
+        prev_features = input
+
+        bottleneck_output = self.bn_function(prev_features)
+        
+        new_features = self.conv2(self.relu2(self.norm2(bottleneck_output)))
+
+        if self.drop_rate > 0:
+            new_features = F.dropout(new_features, p=self.drop_rate, training=self.training)
+        return new_features
+```
+
+The recipe here is simple during the forward pass:
+- We get the previous features (should be a list)
+- We push these features into our bottleneck layers (which are doing the 1x1 conv work)
+- We take the output of the bottleneck pass and push it through the 3x3 conv
+- finally, if we need to then we do drop out.
+
+Let's take a look at the bottleneck pass.
+### DenseNet : bn_function
+
+We have the following simple function
+```python
+    def bn_function(self, inputs: List[Tensor]) -> Tensor:
+        concated_features = torch.cat(inputs, 1)
+        bottleneck_output = self.conv1(self.relu1(self.norm1(concated_features)))  # noqa: T484
+        return bottleneck_output
+```
+Which in a nutshell do the usual normalization -> relu -> conv for a 1x1 convolution.
+
+Now that we have explored a DenseLayer, let's take a look at how a DenseBlock compose them multiple dense layer together.
+
+## DenseBlock
+The code for the DenseBlock is fairly compact, we have the following:
+
+```python
+class _DenseBlock(nn.ModuleDict):
+    _version = 2
+
+    def __init__(
+        self,
+        num_layers: int,
+        num_input_features: int,
+        bn_size: int,
+        growth_rate: int,
+        drop_rate: float,
+        memory_efficient: bool = False,
+    ) -> None:
+        super().__init__()
+        for i in range(num_layers):
+            layer = _DenseLayer(
+                num_input_features + i * growth_rate,
+                growth_rate=growth_rate,
+                bn_size=bn_size,
+                drop_rate=drop_rate,
+                memory_efficient=memory_efficient,
+            )
+            self.add_module("denselayer%d" % (i + 1), layer)
+
+    def forward(self, init_features: Tensor) -> Tensor:
+        features = [init_features]
+        for name, layer in self.items():
+            new_features = layer(features)
+            features.append(new_features)
+        return torch.cat(features, 1)
+```
+
+Let's look at both function
+
+### DenseBlock: __init__
+
+```python
+    def __init__(
+        self,
+        num_layers: int,
+        num_input_features: int,
+        bn_size: int,
+        growth_rate: int,
+        drop_rate: float,
+        memory_efficient: bool = False,
+    ) -> None:
+        super().__init__()
+        for i in range(num_layers):
+            layer = _DenseLayer(
+                num_input_features + i * growth_rate,
+                growth_rate=growth_rate,
+                bn_size=bn_size,
+                drop_rate=drop_rate,
+                memory_efficient=memory_efficient,
+            )
+            self.add_module("denselayer%d" % (i + 1), layer)
+    ```
+
+    The constructor will basically create multiple denselayer and add the module as a module to the DenseBlock.
+    Nothing more complicated than that to be honest.
+
+    ### DenseBlock: forward
+    ```python
+        def forward(self, init_features: Tensor) -> Tensor:
+            features = [init_features]
+                for name, layer in self.items():
+                    new_features = layer(features)
+                    features.append(new_features)
+            return torch.cat(features, 1)
+    ```
+    The  forward function is simply doing taking the initial features:
+    - shoving them through the layer
+    - concatenating the new feature to the old ones
+    - shove these features to the next layer
+    - repeat throughout all DenseLayer
