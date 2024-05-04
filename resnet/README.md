@@ -4,9 +4,9 @@ From: "[Deep Residual Learning for Image Recognition](https://arxiv.org/abs/1512
 **Disclaimer:**
 The code is from the codebase of the Pytorch framework in the [torchvision library](https://github.com/pytorch/vision/blob/2c127da8b5e2e8f44b50994c6cb931bcca267cfe/torchvision/models/resnet.py#L356).
 
-We've trimmed down the resnet.py file for readability and broke down the call stack from the Pytorch API.
+I have trimmed down the resnet.py file for readability and broke down the call stack from the Pytorch API.
 
-This isn't useable code, however it's more understandable.
+This isn't useable code, however it's more understandable for educational purposes.
 
 ## Pytorch ResNet API Usage
 In this section we will explore how the resnet neural network is used in the torchvision library.
@@ -75,7 +75,6 @@ We first get the weights and pass it to the resnet18 API to create the model wit
 The parameter of interest for this API are:
 
 - **weights (ResNet18_Weights, optional)**: The pretrained weights to use. See ResNet18_Weights below for more details, and possible values. By default, no pre-trained weights are used.
-- **progress (bool, optional)**: If True, displays a progress bar of the download to stderr. Default is True.
 
 *[Taken from the Pytorch documentation](https://pytorch.org/vision/main/models/generated/torchvision.models.resnet18.html)*
 
@@ -205,7 +204,7 @@ def _resnet(
 
 We have the following parameters of interest (with unfortunately not much documentation):
 - **block** :  this is either a BasicBlock or a Bottleneck block like in the original resnet paper.
-- **layers**: layers parameter for yet another core internal model
+- **layers**: layers parameter that correspond to how many time we should repeat the blocks within a given layer.
 - **weights**: the weights to initalize a pre-trained model.
 
 If we remove the weights checking code and the loading of the weights function we get only this:
@@ -214,7 +213,7 @@ If we remove the weights checking code and the loading of the weights function w
     model = ResNet(block, layers, weights, **kwargs)
 ```
 
-Which means that there is the `ResNet` class that we need to have to investigate further.
+Which means that there is the `ResNet` class that we need to investigate further.
 
 **Quick Note:**
 I know it seems like it's a bit convoluted, but at this point we are getting into the core of resnet. Getting there!
@@ -223,6 +222,7 @@ Before looking at the ResNet class, let's investigate the BasicBlock and the Bot
 
 ## Basic Block and Bottleneck Block:
 The two type of blocks are fairly similar, the only difference is that the Bottleneck block are less performant, but less computationally intensive. They are used mainly in the deeper residual networks like the resnet-50/101/152.
+
 > [From the Author] Because of concerns on the training time that we can afford, we modify the building block as a bottleneck design. Deeper non-bottleneck ResNets (e.g., Fig. 5 left) also gain accuracy from increased depth (as shown on CIFAR-10), but are not as economical as the bottleneck ResNets. So the usage of bottleneck designs is mainly due to practical considerations.
 
 ![ResNet Basic Block and Bottleneck Block](images/resnet_figure_5.png)
@@ -230,6 +230,7 @@ The two type of blocks are fairly similar, the only difference is that the Bottl
 Let's look at the `BasicBlock` first.
 
 ## BasicBlock (class)
+Remember the basic block is the simplest type of block with two weight layer used in resnet 18 and 34.
 ```python
 class BasicBlock(nn.Module):
     expansion: int = 1
@@ -347,7 +348,7 @@ Then if we are in a downsampling layer `conv3 1, conv4 1, and conv5 1 with a str
         out += identity
         out = self.relu(out)
 ```
-This very last element added is the shortcut connection that powers the whole paper. As we can see we are simply adding back the input (or the down-sampled input) to the learned layer before doing our relu.
+This very last element added is the shortcut connection that powers the whole architecture. As we can see we are simply adding back the input (or the down-sampled input) to the learned layer before doing our relu.
 
 This means that in the hypothetical scenario that was discussed by the authors where a smaller optimal network had extra layers added, the most optimal thing to do for the bigger network is to just learn the identity function so that it can add the output of the last optimal smaller networ layer.
 
@@ -398,7 +399,7 @@ There is a lot of sstuff here in the input, but let's concentrate on the importa
         self.downsample = downsample
         self.stride = stride
 ```
-pretty standard initalization strategy here, nothing very crazy. We just set up our internal functions or parameters to either the inputs or the internal functions that calls the right Pytorch functions.
+pretty standard initalization strategy here, nothing very crazy. We just set up our internal functions or parameters for either the inputs or the internal functions that calls the right Pytorch functions.
 
 Alright, now that we know how BasicBlock works, the bottleneck block will be very simple and similar.
 
@@ -500,11 +501,11 @@ Let's break it down like we did for BasicBlock.
         return out
 ```
 
-The bottleneck block is as show over here:
+The bottleneck block is as shown on this figure:
 
 ![Resnet Bottleneck Block](images/resnet_bottleneck_block.png)
 
-It's exactly the very same structure as before expect we have:
+It's the same overall structure as the BasicBlock before expect we have:
 1. different parameters for the first and last unit (covered in the `__init__`)
 2. 3 units instead of 2.
 
@@ -719,7 +720,7 @@ We have:
 
 Followed by four "chunky" layers that house the residual blocks:
 
-5. `layer1 to 4`
+5. `layer1 to 4` with blocks of varying repitition
 
 Finally, after going through the blocks we always finish up with:
 
@@ -733,9 +734,6 @@ The main differences in all size of Residual Neural Network will boils down to h
         x = self.layer3(x)
         x = self.layer4(x)
 ```
-
-Which is where the idea of bypassing connections comes from.
-
 ## ResNet | _make_layer
 The last helper functions used in order to build the full residual neural network is `_make_layer` which is called in the constructor as follows:
 ```python
@@ -749,7 +747,7 @@ The last helper functions used in order to build the full residual neural networ
 From the inputs two of them are straightforward:
 - **block:** this is either the BasicBlock or Bottleneck as discussed above
 - **planes:** the input channels
-- **layers**: this is a list dictating how many times we need to repeat a block
+- **layers**: this is a list dictating how many times we need to repeat a block, we saw it earlier and had the form [2,2,2,2] for resnet18
 - **stride and dilate**: these are used whenever we need to do downsampling which happens in the paper at `Downsampling is performed by conv3 1, conv4 1, and conv5 1 with a stride of 2`.
 
 With that in mind, let's dive into the `_make_layer` function:
