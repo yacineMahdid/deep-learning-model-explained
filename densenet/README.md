@@ -330,25 +330,25 @@ Let's look at both function
                 memory_efficient=memory_efficient,
             )
             self.add_module("denselayer%d" % (i + 1), layer)
-    ```
+```
 
-    The constructor will basically create multiple denselayer and add the module as a module to the DenseBlock.
-    Nothing more complicated than that to be honest.
+The constructor will basically create multiple denselayer and add the module as a module to the DenseBlock.
+Nothing more complicated than that to be honest.
 
-    ### DenseBlock: forward
-    ```python
-        def forward(self, init_features: Tensor) -> Tensor:
-            features = [init_features]
-                for name, layer in self.items():
-                    new_features = layer(features)
-                    features.append(new_features)
-            return torch.cat(features, 1)
-    ```
-    The  forward function is simply doing taking the initial features:
-    - shoving them through the layer
-    - concatenating the new feature to the old ones
-    - shove these features to the next layer
-    - repeat throughout all DenseLayer
+### DenseBlock: forward
+```python
+    def forward(self, init_features: Tensor) -> Tensor:
+        features = [init_features]
+            for name, layer in self.items():
+                new_features = layer(features)
+                features.append(new_features)
+        return torch.cat(features, 1)
+```
+The  forward function is simply taking the initial features:
+- shoving them through the layer
+- concatenating the new feature to the old ones
+- shove these features to the next layer
+- repeat throughout all DenseLayer
 
 ## DenseNet
 ```python
