@@ -83,3 +83,156 @@ Let's break it down some more in term of important section:
 
 let's take a look at cfgs[cfg] first
 
+## cfgs
+
+```python
+cfgs: Dict[str, List[Union[str, int]]] = {
+    "A": [64, "M", 128, "M", 256, 256, "M", 512, 512, "M", 512, 512, "M"],
+    "B": [64, 64, "M", 128, 128, "M", 256, 256, "M", 512, 512, "M", 512, 512, "M"],
+    "D": [64, 64, "M", 128, 128, "M", 256, 256, 256, "M", 512, 512, 512, "M", 512, 512, 512, "M"],
+    "E": [64, 64, "M", 128, 128, "M", 256, 256, 256, 256, "M", 512, 512, 512, 512, "M", 512, 512, 512, 512, "M"],
+}
+```
+This is simply a way for the configuration of the networks to be expressed.
+Here M means a max pooling layer and the integers are used for convolution layers input channels.
+
+
+let's check out the make layers function next.
+## make_layers
+```python
+def make_layers(cfg: List[Union[str, int]], batch_norm: bool = False) -> nn.Sequential:
+    layers: List[nn.Module] = []
+    in_channels = 3
+    for v in cfg:
+        if v == "M":
+            layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
+        else:
+            v = cast(int, v)
+            conv2d = nn.Conv2d(in_channels, v, kernel_size=3, padding=1)
+            if batch_norm:
+                layers += [conv2d, nn.BatchNorm2d(v), nn.ReLU(inplace=True)]
+            else:
+                layers += [conv2d, nn.ReLU(inplace=True)]
+            in_channels = v
+    return nn.Sequential(*layers)
+```
+
+The make layers consist of a main iteration on the configuration being given, as a reminder the cfg is a dictionary that give access to list of str or int. For instance, A gives us:
+
+```python
+    "A": [64, "M", 128, "M", 256, 256, "M", 512, 512, "M", 512, 512, "M"]
+```
+Meaning the variable v will iterate on `[64, "M", 128, "M", 256, 256, "M", 512, 512, "M", 512, 512, "M"]`.
+
+This is a bit of a weird way of building the network considering how usually the Pytorch documentation is set up, but it works.
+
+First we have in_channel which starts at 3, this will change as we iterate across the list and be fed for the convolution layer.
+
+Then we have the `"M"` variable which in this case will trigger:
+
+```python
+        if v == "M":
+            layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
+```
+Which creates a 2x2 max pooling layer of stride 2 and add it to the bunch of layers.
+
+Next we have all the numbers `[64, 128, 256, 512]`, which goes into the else statement.
+
+```python
+            v = cast(int, v)
+            conv2d = nn.Conv2d(in_channels, v, kernel_size=3, padding=1)
+            if batch_norm:
+                layers += [conv2d, nn.BatchNorm2d(v), nn.ReLU(inplace=True)]
+            else:
+                layers += [conv2d, nn.ReLU(inplace=True)]
+            in_channels = v
+```
+
+We create a convolution layer, then we either add a batchnorm + relu or just a relu.
+
+Finally we return the layers as a sequential object:
+```python
+    return nn.Sequential(*layers)
+```
+
+Note: The final classifier layers aren't in there, it will be located in the VGG class.
+
+Pretty simple. Let's take a look at VGG
+
+
+
+## VGG
+```python
+class VGG(nn.Module):
+    def __init__(
+        self, features: nn.Module, num_classes: int = 1000, init_weights: bool = True, dropout: float = 0.5
+    ) -> None:
+        super().__init__()
+        _log_api_usage_once(self)
+        self.features = features
+        self.avgpool = nn.AdaptiveAvgPool2d((7, 7))
+        self.classifier = nn.Sequential(
+            nn.Linear(512 * 7 * 7, 4096),
+            nn.ReLU(True),
+            nn.Dropout(p=dropout),
+            nn.Linear(4096, 4096),
+            nn.ReLU(True),
+            nn.Dropout(p=dropout),
+            nn.Linear(4096, num_classes),
+        )
+        if init_weights:
+            for m in self.modules():
+                if isinstance(m, nn.Conv2d):
+                    nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
+                elif isinstance(m, nn.BatchNorm2d):
+                    nn.init.constant_(m.weight, 1)
+                    nn.init.constant_(m.bias, 0)
+                elif isinstance(m, nn.Linear):
+                    nn.init.normal_(m.weight, 0, 0.01)
+                    nn.init.constant_(m.bias, 0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
+```
+
+The network main input is the output of make layers, technically it would be a bit cleaner to add the make layer **inside** the constructor which is usually what is being done in newer models.
+
+So the input is Sequential which is a series of layer before the final classifier.
+
+Here we have the classic 3 section:
+1. forward function
+2. weights initializer
+3. layer creation
+
+## VGG | init -> layer creation
+
+For the first chunk we have:
+```python
+    def __init__(
+        self, features: nn.Module, num_classes: int = 1000, init_weights: bool = True, dropout: float = 0.5
+    ) -> None:
+        super().__init__()
+        _log_api_usage_once(self)
+        self.features = features
+        self.avgpool = nn.AdaptiveAvgPool2d((7, 7))
+        self.classifier = nn.Sequential(
+            nn.Linear(512 * 7 * 7, 4096),
+            nn.ReLU(True),
+            nn.Dropout(p=dropout),
+            nn.Linear(4096, 4096),
+            nn.ReLU(True),
+            nn.Dropout(p=dropout),
+            nn.Linear(4096, num_classes),
+        )
+```
+
+The parameters of interest are:
+- `features` : the output of make_layers
+- `num_class` : the number of class for the final classification
+- `init_weights` : whether we
