@@ -235,4 +235,49 @@ For the first chunk we have:
 The parameters of interest are:
 - `features` : the output of make_layers
 - `num_class` : the number of class for the final classification
-- `init_weights` : whether we
+- `init_weights` : whether we will do the recommended weight initialization or not
+- `dropout`: finally the amount of drop out involved in the last classification layers (aka whether some of the neuron will die or not).
+
+
+The final classifier is:
+- Linear + Relu with dropp out
+- another linear + relu + dropp out
+- final linear with the output being the required number of class (i.e. 1000 for imagenet)
+
+## VGG | init > weight initialization
+```python
+        if init_weights:
+            for m in self.modules():
+                if isinstance(m, nn.Conv2d):
+                    nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
+                elif isinstance(m, nn.BatchNorm2d):
+                    nn.init.constant_(m.weight, 1)
+                    nn.init.constant_(m.bias, 0)
+                elif isinstance(m, nn.Linear):
+                    nn.init.normal_(m.weight, 0, 0.01)
+                    nn.init.constant_(m.bias, 0)
+
+```
+Here we are iterating over all layers and initializing their weight and/or bias with a specific initialization scheme.
+
+Lets finally look at the forward function:
+
+## VGG | forward
+```python
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
+```
+
+The forward function accet the input image x and then pass it through the whole architecture in this order:
+1. `features`: aka all the layers before the final classifier
+2. `avgpool` : aka average pooling before doing the final classification
+3. `flattening` : aka we are flattening the output of the average pooling to have like 1 dimension instead of being 3D.
+4. `classification` : aka shoving this flattened output into the final fully connected classification units.
+
+and that's it 🎉
