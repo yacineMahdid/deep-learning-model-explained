@@ -181,7 +181,6 @@ class FractalBlock(nn.Module):
                 cur_outs.append(cur_module(cur_in))
 
             # join
-            #print("join in depth = {}, # of in_join = {}".format(i, len(cur_out)))
             joined = self.join(cur_outs, global_cols)
 
             for c in range(st, self.n_columns):

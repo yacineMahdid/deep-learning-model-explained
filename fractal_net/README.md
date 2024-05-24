@@ -142,6 +142,10 @@ The forward function is straightforward:
 Let's explore the FractalBlock now
 
 ## FractalBlock
+A fractal block is a repeating block containing the different columnar path inside a fractalnet.
+These block are followed by the pooling layers and are repeating in exactly the same way multiple time (B time actually).
+
+
 ```python
 class FractalBlock(nn.Module):
     def __init__(self, n_columns, C_in, C_out, p_ldrop, p_dropout, pad_type='zero',
@@ -290,7 +294,141 @@ There are a few section of interest here, namely:
 - join function
 - forward function
 
-Let's look at all of them, starting with the drop mask function
+Let's look at all of them, starting with the constructor
+
+### FractalBlock | init
+```python
+    def __init__(self, n_columns, C_in, C_out, p_ldrop, p_dropout, pad_type='zero',doubling=False, dropout_pos='CDBR'):
+        """ Fractal block
+        Args:
+            - n_columns: # of columns
+            - C_in: channel_in
+            - C_out: channel_out
+            - p_ldrop: local droppath prob
+            - p_dropout: dropout prob
+            - pad_type: padding type of conv
+            - doubling: if True, doubling by 1x1 conv in front of the block.
+            - dropout_pos: the position of dropout
+                - CDBR (default): conv-dropout-BN-relu
+                - CBRD: conv-BN-relu-dropout
+                - FD: fractal_block-dropout
+        """
+        super().__init__()
+
+        self.n_columns = n_columns
+        self.p_ldrop = p_ldrop
+        self.dropout_pos = dropout_pos
+        if dropout_pos == 'FD' and p_dropout > 0.:
+            self.dropout = nn.Dropout2d(p=p_dropout)
+            p_dropout = 0.
+        else:
+            self.dropout = None
+
+        if doubling:
+            #self.doubler = nn.Conv2d(C_in, C_out, 1, padding=0)
+            self.doubler = ConvBlock(C_in, C_out, 1, padding=0)
+        else:
+            self.doubler = None
+
+        self.columns = nn.ModuleList([nn.ModuleList() for _ in range(n_columns)])
+        self.max_depth = 2 ** (n_columns-1)
+
+        dist = self.max_depth
+        self.count = np.zeros([self.max_depth], dtype=np.int)
+        for col in self.columns:
+            for i in range(self.max_depth):
+                if (i+1) % dist == 0:
+                    first_block = (i+1 == dist) # first block in this column
+                    if first_block and not doubling:
+                        # if doubling, always input channel size is C_out.
+                        cur_C_in = C_in
+                    else:
+                        cur_C_in = C_out
+
+                    module = ConvBlock(cur_C_in, C_out, dropout=p_dropout, pad_type=pad_type,
+                                       dropout_pos=dropout_pos)
+                    self.count[i] += 1
+                else:
+                    module = None
+
+                col.append(module)
+
+            dist //= 2
+```
+
+
+As a note, doubling in this text refer to this easy to miss footnote in the paper:
+> This deeper (4 column) FractalNet has fewer parameters. We vary column width: p128, 64, 32, 16q channels across columns initially, doubling each block except the last. A linear projection temporarily widens thinner columns before joins. As in Iandola et al. (2016), we switch to a mix of 1 ˆ 1 and 3 ˆ 3 convolutional filters.
+
+Let's keep that in mind while we explore the constructor.
+
+Within the constructor there is a few area of interest:
+1. various initialization
+2. drop out preparation
+3. creation of the columns
+
+Let's break it down some more:
+#### FractalBlock | Init | Initialization & dropout
+```python
+        self.n_columns = n_columns
+        self.p_ldrop = p_ldrop
+        self.dropout_pos = dropout_pos
+        self.dropout = nn.Dropout2d(p=p_dropout)
+        self.doubler = ConvBlock(C_in, C_out, 1, padding=0)
+        self.columns = nn.ModuleList([nn.ModuleList() for _ in range(n_columns)])
+        self.max_depth = 2 ** (n_columns-1)
+        self.count = np.zeros([self.max_depth], dtype=np.int)
+```
+Also there are these inputs given to the constructor:
+```python
+            - n_columns: # of columns
+            - C_in: channel_in
+            - C_out: channel_out
+            - p_ldrop: local droppath prob
+            - p_dropout: dropout prob
+            - pad_type: padding type of conv
+            - doubling: if True, doubling by 1x1 conv in front of the block.
+            - dropout_pos: the position of dropout
+                - CDBR (default): conv-dropout-BN-relu
+                - CBRD: conv-BN-relu-dropout
+                - FD: fractal_block-dropout
+```
+
+The normal stuff in there are the following:
+1. `n_columns` : this simply states how many columns we should be creating, in the paper it was called `C`
+2. `C_in and C_out` : the channel in and out to start the fractal block
+3. `p_dropout` : the probability of a drop out (not drop path do not get confused)
+4. `p_ldrop` : the probability of a local drop path, which is happening at each joins.
+5. `pad_type` : variable sed in the ConvBlock for the padding type.
+6. `doubling` : boolean used to figure out if we are adding a 1x1 convolution, it pertain to the note above.
+7. `dropout_pos`: the position of the drop out, here at this level only FD can be used, the other two will be passed as parameter for the ConvBlock
+
+There are a few weird variables that aren't so well documented in there which are the following:
+```python
+        self.doubler = ConvBlock(C_in, C_out, 1, padding=0)
+        self.max_depth = 2 ** (n_columns-1)
+        self.count = np.zeros([self.max_depth], dtype=np.int)
+```
+- The doubler is the 1x1 convolution that we add in very specific case.
+- max_depth is the formula 2^(C-1) that tells us the max depth in a block, it depends on C which is the number of columns.
+- count is an array where the index represent the depth in the fractal block. This will be used to count the number of convolution block we have per depth (in turn useful for the join operation)
+
+for drop out we are simply doing it if it's FD block:
+```python
+        if dropout_pos == 'FD' and p_dropout > 0.:
+            self.dropout = nn.Dropout2d(p=p_dropout)
+            p_dropout = 0.
+        else:
+            self.dropout = None
+```
+Notice here that we aren't going to add that to our layer list strangely enough.
+self.dropout however will make a comeback in the forward function.
+
+#### FractalBlock | Init | Columns Creation
+```python
+
+```
+
 
 ## FractalBlock | join
 ```python
@@ -384,70 +522,6 @@ The parameters is:
 - `n_cols`: the number of columns to mask
 
 
-
-
-#
-
-### FractalBlock | init
-```python
-    def __init__(self, n_columns, C_in, C_out, p_ldrop, p_dropout, pad_type='zero',
-                 doubling=False, dropout_pos='CDBR'):
-        """ Fractal block
-        Args:
-            - n_columns: # of columns
-            - C_in: channel_in
-            - C_out: channel_out
-            - p_ldrop: local droppath prob
-            - p_dropout: dropout prob
-            - pad_type: padding type of conv
-            - doubling: if True, doubling by 1x1 conv in front of the block.
-            - dropout_pos: the position of dropout
-                - CDBR (default): conv-dropout-BN-relu
-                - CBRD: conv-BN-relu-dropout
-                - FD: fractal_block-dropout
-        """
-        super().__init__()
-
-        self.n_columns = n_columns
-        self.p_ldrop = p_ldrop
-        self.dropout_pos = dropout_pos
-        if dropout_pos == 'FD' and p_dropout > 0.:
-            self.dropout = nn.Dropout2d(p=p_dropout)
-            p_dropout = 0.
-        else:
-            self.dropout = None
-
-        if doubling:
-            #self.doubler = nn.Conv2d(C_in, C_out, 1, padding=0)
-            self.doubler = ConvBlock(C_in, C_out, 1, padding=0)
-        else:
-            self.doubler = None
-
-        self.columns = nn.ModuleList([nn.ModuleList() for _ in range(n_columns)])
-        self.max_depth = 2 ** (n_columns-1)
-
-        dist = self.max_depth
-        self.count = np.zeros([self.max_depth], dtype=np.int)
-        for col in self.columns:
-            for i in range(self.max_depth):
-                if (i+1) % dist == 0:
-                    first_block = (i+1 == dist) # first block in this column
-                    if first_block and not doubling:
-                        # if doubling, always input channel size is C_out.
-                        cur_C_in = C_in
-                    else:
-                        cur_C_in = C_out
-
-                    module = ConvBlock(cur_C_in, C_out, dropout=p_dropout, pad_type=pad_type,
-                                       dropout_pos=dropout_pos)
-                    self.count[i] += 1
-                else:
-                    module = None
-
-                col.append(module)
-
-            dist //= 2
-```
 
 ### FractalBlock | forward
 ```python
