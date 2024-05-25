@@ -470,7 +470,9 @@ This expression needs to be taken into consideration with how the variable `dist
         dist //= 2
 ```
 In the first column, we will only add a convolutional block when i+1 == dist which is at the max depth (so once)
-In the second column, we will add a convolutional block twice.
+In the second column, we will add a convolutional block twice since we halve the dist variable, so we'll hit the modulus of it 2 time.
+In the subsequent column we will do it 2* the previous column.
+Until we hit the last column where we will add a convolutional block all the time instead of the None.
 
 
 ## FractalBlock | join
