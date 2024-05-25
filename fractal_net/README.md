@@ -16,128 +16,112 @@ Lots of parameters and with a structure that doesn't necessarily follow the usua
 If we look at a high level overview we'll have the following class nested in this manner:
 - FractalNet -> FractalBlock -> ConvBlock
 
-Let's look at each of the element in the reverse order to gain a detailed appreciation of the implementation.
+Let's look at each of the element starting with FractalNet:
 
-## ConvBlock
-Here the Convolution Block is a short-hand class that has the convolution + drop out  + batch normalization and relu mix.
-It's easier to package this into a singular entity since the fractal expension rule will be based off this.
-
+## FractalNet
 ```python
-class ConvBlock(nn.Module):
-    """ Conv - Dropout - BN - ReLU """
-    def __init__(self, C_in, C_out, kernel_size=3, stride=1, padding=1, dropout=None,
-                 pad_type='zero', dropout_pos='CDBR'):
-        """ Conv
+class FractalNet(nn.Module):
+    def __init__(self, data_shape, n_columns, init_channels, p_ldrop, dropout_probs,
+                 gdrop_ratio, gap=0, init='xavier', pad_type='zero', doubling=False,
+                 consist_gdrop=True, dropout_pos='CDBR'):
+        """ FractalNet
         Args:
+            - data_shape: (C, H, W, n_classes). e.g. (3, 32, 32, 10) - CIFAR 10.
+            - n_columns: the number of columns
+            - init_channels: the number of out channels in the first block
+            - p_ldrop: local drop prob
+            - dropout_probs: dropout probs (list)
+            - gdrop_ratio: global droppath ratio
+            - gap: pooling type for last block
+            - init: initializer type
+            - pad_type: padding type of conv
+            - doubling: if True, doubling by 1x1 conv in front of the block.
+            - consist_gdrop
             - dropout_pos: the position of dropout
                 - CDBR (default): conv-dropout-BN-relu
                 - CBRD: conv-BN-relu-dropout
-                - FD: fractal-dropout
+                - FD: fractal_block-dropout
         """
         super().__init__()
-        self.dropout_pos = dropout_pos
-        if pad_type == 'zero':
-            self.pad = nn.ZeroPad2d(padding)
-        elif pad_type == 'reflect':
-            # [!] the paper used reflect padding - just for data augmentation?
-            self.pad = nn.ReflectionPad2d(padding)
-        else:
-            raise ValueError(pad_type)
+        assert dropout_pos in ['CDBR', 'CBRD', 'FD']
 
-        self.conv = nn.Conv2d(C_in, C_out, kernel_size, stride, padding=0, bias=False)
-        if dropout is not None and dropout > 0.:
-            self.dropout = nn.Dropout2d(p=dropout, inplace=True)
-        else:
-            self.dropout = None
-        self.bn = nn.BatchNorm2d(C_out)
+        self.B = len(dropout_probs) # the number of blocks
+        self.consist_gdrop = consist_gdrop
+        self.gdrop_ratio = gdrop_ratio
+        self.n_columns = n_columns
+        C_in, H, W, n_classes = data_shape
 
-    def forward(self, x):
-        out = self.pad(x)
-        out = self.conv(out)
-        if self.dropout_pos == 'CDBR' and self.dropout:
-            out = self.dropout(out)
-        out = self.bn(out)
-        out = F.relu_(out)
-        if self.dropout_pos == 'CBRD' and self.dropout:
-            out = self.dropout(out)
+        assert H == W
+        size = H
+
+        layers = nn.ModuleList()
+        C_out = init_channels
+        total_layers = 0
+        for b, p_dropout in enumerate(dropout_probs):
+            print("[block {}] Channel in = {}, Channel out = {}".format(b, C_in, C_out))
+            fb = FractalBlock(n_columns, C_in, C_out, p_ldrop, p_dropout,
+                              pad_type=pad_type, doubling=doubling, dropout_pos=dropout_pos)
+            layers.append(fb)
+            if gap == 0 or b < self.B-1:
+                # Originally, every pool is max-pool in the paper (No GAP).
+                layers.append(nn.MaxPool2d(2))
+            elif gap == 1:
+                # last layer and gap == 1
+                layers.append(nn.AdaptiveAvgPool2d(1)) # average pooling
+
+            size //= 2
+            total_layers += fb.max_depth
+            C_in = C_out
+            if b < self.B-2:
+                C_out *= 2 # doubling except for last block
+
+        print("Last featuremap size = {}".format(size))
+        print("Total layers = {}".format(total_layers))
+
+        if gap == 2:
+            layers.append(nn.Conv2d(C_out, n_classes, 1, padding=0)) # 1x1 conv
+            layers.append(nn.AdaptiveAvgPool2d(1)) # gap
+            layers.append(Flatten())
+        else:
+            layers.append(Flatten())
+            layers.append(nn.Linear(C_out * size * size, n_classes)) # fc layer
+
+        self.layers = layers
+
+        # initialization
+        if init != 'torch':
+            initialize_ = {
+                'xavier': nn.init.xavier_uniform_,
+                'he': nn.init.kaiming_uniform_
+            }[init]
+
+            for n, p in self.named_parameters():
+                if p.dim() > 1: # weights only
+                    initialize_(p)
+                else: # bn w/b or bias
+                    if 'bn.weight' in n:
+                        nn.init.ones_(p)
+                    else:
+                        nn.init.zeros_(p)
+
+    def forward(self, x, deepest=False):
+        if deepest:
+            assert self.training is False
+        GB = int(x.size(0) * self.gdrop_ratio)
+        out = x
+        global_cols = None
+        for layer in self.layers:
+            if isinstance(layer, FractalBlock):
+                if not self.consist_gdrop or global_cols is None:
+                    global_cols = np.random.randint(0, self.n_columns, size=[GB])
+
+                out = layer(out, global_cols, deepest=deepest)
+            else:
+                out = layer(out)
 
         return out
 ```
-Side note: great documentation here.
-- We have the constructor here
-- forward function.
 
-Let's take a look at the constructor
-
-### ConvBlock | init
-```python
-def __init__(self, C_in, C_out, kernel_size=3, stride=1, padding=1, dropout=None,
-                 pad_type='zero', dropout_pos='CDBR'):
-        """ Conv
-        Args:
-            - dropout_pos: the position of dropout
-                - CDBR (default): conv-dropout-BN-relu
-                - CBRD: conv-BN-relu-dropout
-                - FD: fractal-dropout
-        """
-        super().__init__()
-        self.dropout_pos = dropout_pos
-        if pad_type == 'zero':
-            self.pad = nn.ZeroPad2d(padding)
-        elif pad_type == 'reflect':
-            # [!] the paper used reflect padding - just for data augmentation?
-            self.pad = nn.ReflectionPad2d(padding)
-        else:
-            raise ValueError(pad_type)
-
-        self.conv = nn.Conv2d(C_in, C_out, kernel_size, stride, padding=0, bias=False)
-        if dropout is not None and dropout > 0.:
-            self.dropout = nn.Dropout2d(p=dropout, inplace=True)
-        else:
-            self.dropout = None
-        self.bn = nn.BatchNorm2d(C_out)
-```
-A few argument of interesting here:
-- `C_in`: channel in
-- `C_out`: channel out
-- `kernel_size`: size of the convolution
-- `stride` : movement of the convolution
-- `padding` : how much padding we should be doing
-- `dropout` : percentage of drop out
-- `pad_type` : either zero padding or reflection padding
-- `dropout_pos` : where in the sequence conv-bn-relu are we going to put the dropout (3 choice)
-
-
-in this constructor we are basically setting up these variables for the forward function:
-```python
-self.dropout_pos = dropout_pos
-self.pad = nn.ZeroPad2d(padding) OR nn.ReflectionPad2d(padding)
-self.conv = nn.Conv2d(C_in, C_out, kernel_size, stride, padding=0, bias=False)
-self.dropout = nn.Dropout2d(p=dropout, inplace=True) OR None
-self.bn = nn.BatchNorm2d(C_out)
-```
-
-### ConvBlock | forward
-```python
-    def forward(self, x):
-        out = self.pad(x)
-        out = self.conv(out)
-        if self.dropout_pos == 'CDBR' and self.dropout:
-            out = self.dropout(out)
-        out = self.bn(out)
-        out = F.relu_(out)
-        if self.dropout_pos == 'CBRD' and self.dropout:
-            out = self.dropout(out)
-
-        return out
-
-```
-The forward function is straightforward:
-- we pad the input
-- we pass it through the convolution layer
-- we either do drop out now or after the batch normalization
-- we do batch normalization then ReLU
-- return the output of all this.
 
 Let's explore the FractalBlock now
 
@@ -465,7 +449,7 @@ This expression needs to be taken into consideration with how the variable `dist
             if (i+1) % dist == 0
                 # ADD A MODULE
             else:
-                # DONT
+                # DONT ADD A MODULE
         
         dist //= 2
 ```
@@ -474,8 +458,14 @@ In the second column, we will add a convolutional block twice since we halve the
 In the subsequent column we will do it 2* the previous column.
 Until we hit the last column where we will add a convolutional block all the time instead of the None.
 
+There are some more details about the doubling in there, but for the overall architecture it isn't too important.
 
-## FractalBlock | join
+So, at the end of these iterations we should have a columns grid filled up with None of Convolutional filters.
+A counts array per row that sum the amount of convolutional filters.
+
+Let's take a look at the two auxiliary function `join` and `drop_mask`.
+
+### FractalBlock | join
 ```python
     def join(self, outs, global_cols):
         """
@@ -500,7 +490,7 @@ Until we hit the last column where we will add a convolutional block all the tim
 ```
 The parameters of interest are:
 - `outs`: the input to join which is the output of the previous fractal layers manipulation
-- `global_cols`: ????
+- `global_cols`: parameter for drop_mask which dictate for the global path which columns to drop. This parameters is passed along all the way from the FractalNet class we'll see in a bit.
 
 Here there are two main case, if we are not in training mode we will calculate the mean with no drop and generate the output for the next layer.
 
@@ -512,6 +502,8 @@ However, if we are in training we will follow this sequence:
 
 It's a bit confusing here with the alive/dead nomenclature, but this part:
 `n_alive[n_alive == 0.] = 1` is only to not make the division carry on zero in the denominator.
+
+Let's dive into drop_mask now.
 
 ### FractalBlock | drop_mask
 drop_mask is used as follows by the join operation:
@@ -563,8 +555,10 @@ The whole idea of this drop_mask function is to generate a mask on the network i
 
 The parameters is:
 - `B`: the batch size
-- `global_cols`: ??????
+- `global_cols`: dictate which column to odrop
 - `n_cols`: the number of columns to mask
+
+In this specific case we generate
 
 
 
@@ -599,5 +593,123 @@ The parameters is:
 
         return outs[-1] # for deepest case
 ```
+## ConvBlock
+Here the Convolution Block is a short-hand class that has the convolution + drop out  + batch normalization and relu mix.
+It's easier to package this into a singular entity since the fractal expension rule will be based off this.
 
-## FractalNet
+```python
+class ConvBlock(nn.Module):
+    """ Conv - Dropout - BN - ReLU """
+    def __init__(self, C_in, C_out, kernel_size=3, stride=1, padding=1, dropout=None,
+                 pad_type='zero', dropout_pos='CDBR'):
+        """ Conv
+        Args:
+            - dropout_pos: the position of dropout
+                - CDBR (default): conv-dropout-BN-relu
+                - CBRD: conv-BN-relu-dropout
+                - FD: fractal-dropout
+        """
+        super().__init__()
+        self.dropout_pos = dropout_pos
+        if pad_type == 'zero':
+            self.pad = nn.ZeroPad2d(padding)
+        elif pad_type == 'reflect':
+            # [!] the paper used reflect padding - just for data augmentation?
+            self.pad = nn.ReflectionPad2d(padding)
+        else:
+            raise ValueError(pad_type)
+
+        self.conv = nn.Conv2d(C_in, C_out, kernel_size, stride, padding=0, bias=False)
+        if dropout is not None and dropout > 0.:
+            self.dropout = nn.Dropout2d(p=dropout, inplace=True)
+        else:
+            self.dropout = None
+        self.bn = nn.BatchNorm2d(C_out)
+
+    def forward(self, x):
+        out = self.pad(x)
+        out = self.conv(out)
+        if self.dropout_pos == 'CDBR' and self.dropout:
+            out = self.dropout(out)
+        out = self.bn(out)
+        out = F.relu_(out)
+        if self.dropout_pos == 'CBRD' and self.dropout:
+            out = self.dropout(out)
+
+        return out
+```
+Side note: great documentation here.
+- We have the constructor here
+- forward function.
+
+Let's take a look at the constructor
+
+### ConvBlock | init
+```python
+def __init__(self, C_in, C_out, kernel_size=3, stride=1, padding=1, dropout=None,
+                 pad_type='zero', dropout_pos='CDBR'):
+        """ Conv
+        Args:
+            - dropout_pos: the position of dropout
+                - CDBR (default): conv-dropout-BN-relu
+                - CBRD: conv-BN-relu-dropout
+                - FD: fractal-dropout
+        """
+        super().__init__()
+        self.dropout_pos = dropout_pos
+        if pad_type == 'zero':
+            self.pad = nn.ZeroPad2d(padding)
+        elif pad_type == 'reflect':
+            # [!] the paper used reflect padding - just for data augmentation?
+            self.pad = nn.ReflectionPad2d(padding)
+        else:
+            raise ValueError(pad_type)
+
+        self.conv = nn.Conv2d(C_in, C_out, kernel_size, stride, padding=0, bias=False)
+        if dropout is not None and dropout > 0.:
+            self.dropout = nn.Dropout2d(p=dropout, inplace=True)
+        else:
+            self.dropout = None
+        self.bn = nn.BatchNorm2d(C_out)
+```
+A few argument of interesting here:
+- `C_in`: channel in
+- `C_out`: channel out
+- `kernel_size`: size of the convolution
+- `stride` : movement of the convolution
+- `padding` : how much padding we should be doing
+- `dropout` : percentage of drop out
+- `pad_type` : either zero padding or reflection padding
+- `dropout_pos` : where in the sequence conv-bn-relu are we going to put the dropout (3 choice)
+
+
+in this constructor we are basically setting up these variables for the forward function:
+```python
+self.dropout_pos = dropout_pos
+self.pad = nn.ZeroPad2d(padding) OR nn.ReflectionPad2d(padding)
+self.conv = nn.Conv2d(C_in, C_out, kernel_size, stride, padding=0, bias=False)
+self.dropout = nn.Dropout2d(p=dropout, inplace=True) OR None
+self.bn = nn.BatchNorm2d(C_out)
+```
+
+### ConvBlock | forward
+```python
+    def forward(self, x):
+        out = self.pad(x)
+        out = self.conv(out)
+        if self.dropout_pos == 'CDBR' and self.dropout:
+            out = self.dropout(out)
+        out = self.bn(out)
+        out = F.relu_(out)
+        if self.dropout_pos == 'CBRD' and self.dropout:
+            out = self.dropout(out)
+
+        return out
+
+```
+The forward function is straightforward:
+- we pad the input
+- we pass it through the convolution layer
+- we either do drop out now or after the batch normalization
+- we do batch normalization then ReLU
+- return the output of all this.
