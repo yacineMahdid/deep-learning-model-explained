@@ -426,8 +426,51 @@ self.dropout however will make a comeback in the forward function.
 
 #### FractalBlock | Init | Columns Creation
 ```python
+        self.columns = nn.ModuleList([nn.ModuleList() for _ in range(n_columns)])
+        dist = self.max_depth
+        self.count = np.zeros([self.max_depth], dtype=np.int)
 
+        for col in self.columns:
+            for i in range(self.max_depth):
+                if (i+1) % dist == 0:
+                    first_block = (i+1 == dist) # first block in this column
+                    if first_block and not doubling:
+                        # if doubling, always input channel size is C_out.
+                        cur_C_in = C_in
+                    else:
+                        cur_C_in = C_out
+
+                    module = ConvBlock(cur_C_in, C_out, dropout=p_dropout, pad_type=pad_type,
+                                       dropout_pos=dropout_pos)
+                    self.count[i] += 1
+                else:
+                    module = None
+
+                col.append(module)
+
+            dist //= 2
 ```
+In this section we are effectively populating two arrays:
+1. columns, which is a 2D array of ModuleList, basically a grid representing every row and column in a fractalblock
+2. count, an array that keep a count of how many convolutional blocks there are per level (will be useful for the join function)
+
+Then the recipe is as follow:
+- We are iterating on each column one by one across its whole depth.
+- by default we will output a `None` inside our column array, except when this expression is true : `if (i+1) % dist == 0`
+
+This expression needs to be taken into consideration with how the variable `dist` was initialized and how it is updated:
+```python
+        dist = self.max_depth
+        # FOR LOOP STUFF
+            if (i+1) % dist == 0
+                # ADD A MODULE
+            else:
+                # DONT
+        
+        dist //= 2
+```
+In the first column, we will only add a convolutional block when i+1 == dist which is at the max depth (so once)
+In the second column, we will add a convolutional block twice.
 
 
 ## FractalBlock | join
