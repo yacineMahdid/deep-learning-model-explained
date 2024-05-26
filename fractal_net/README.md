@@ -1,5 +1,7 @@
 # Fractal Net
 The code was taken and modified from the [following repository](https://github.com/khanrc/pt.fractalnet/tree/master).
+An important thing to keep in mind with this code is that the drop path is done on a per sample basis, not on a per batch basis.
+Meaning that drop path will be applied within a batch and cut the sample into some % doing global drop path and the rest will be local drop path.
 
 The model is used in the following manner at a high level:
 ```python
@@ -15,6 +17,11 @@ Lots of parameters and with a structure that doesn't necessarily follow the usua
 
 If we look at a high level overview we'll have the following class nested in this manner:
 - FractalNet -> FractalBlock -> ConvBlock
+
+As a disclaimer before we jump into the main code, the FractalNet architecture is a bit weird in the sense that it is not linear.
+There are branching paths within a FractalBlock and there isn't the same amount of element within a given columns.
+
+Therefore, programmatically we'll need to work with a grid that we will populate with information that will help flag which region of the grid has something in a given path.
 
 Let's look at each of the element starting with FractalNet:
 
@@ -122,13 +129,253 @@ class FractalNet(nn.Module):
         return out
 ```
 
+Parameters are:
+    - data_shape: (C, H, W, n_classes). e.g. (3, 32, 32, 10) - CIFAR 10.
+    - n_columns: the number of columns
+    - init_channels: the number of out channels in the first block
+    - p_ldrop: local drop prob (!!! this is for local drop path)
+    - dropout_probs: dropout probs (list) (!!! This is for regular drop out)
+    - gdrop_ratio: global droppath ratio (!!! This is for global drop path)
+    - consist_gdrop
+    - dropout_pos: the position of dropout
+        - CDBR (default): conv-dropout-BN-relu
+        - CBRD: conv-BN-relu-dropout
+        - FD: fractal_block-dropout
+    (less important parameters)
+    - gap: pooling type for last block
+    - init: initializer type
+    - pad_type: padding type of conv
+    - doubling: if True, doubling by 1x1 conv in front of the block.
 
-Let's explore the FractalBlock now
+We'll see most of these reappering multiple time throughout the downstream code.
+Let's take a look at the constructor first:
+
+### FractalNet | init
+```python
+def __init__(self, data_shape, n_columns, init_channels, p_ldrop, dropout_probs,
+                 gdrop_ratio, gap=0, init='xavier', pad_type='zero', doubling=False,
+                 consist_gdrop=True, dropout_pos='CDBR'):
+        """ FractalNet
+        Args:
+            - data_shape: (C, H, W, n_classes). e.g. (3, 32, 32, 10) - CIFAR 10.
+            - n_columns: the number of columns
+            - init_channels: the number of out channels in the first block
+            - p_ldrop: local drop prob
+            - dropout_probs: dropout probs (list)
+            - gdrop_ratio: global droppath ratio
+            - gap: pooling type for last block
+            - init: initializer type
+            - pad_type: padding type of conv
+            - doubling: if True, doubling by 1x1 conv in front of the block.
+            - consist_gdrop
+            - dropout_pos: the position of dropout
+                - CDBR (default): conv-dropout-BN-relu
+                - CBRD: conv-BN-relu-dropout
+                - FD: fractal_block-dropout
+        """
+        super().__init__()
+        assert dropout_pos in ['CDBR', 'CBRD', 'FD']
+
+        self.B = len(dropout_probs) # the number of blocks
+        self.consist_gdrop = consist_gdrop
+        self.gdrop_ratio = gdrop_ratio
+        self.n_columns = n_columns
+        C_in, H, W, n_classes = data_shape
+
+        assert H == W
+        size = H
+
+        layers = nn.ModuleList()
+        C_out = init_channels
+        total_layers = 0
+        for b, p_dropout in enumerate(dropout_probs):
+            print("[block {}] Channel in = {}, Channel out = {}".format(b, C_in, C_out))
+            fb = FractalBlock(n_columns, C_in, C_out, p_ldrop, p_dropout,
+                              pad_type=pad_type, doubling=doubling, dropout_pos=dropout_pos)
+            layers.append(fb)
+            if gap == 0 or b < self.B-1:
+                # Originally, every pool is max-pool in the paper (No GAP).
+                layers.append(nn.MaxPool2d(2))
+            elif gap == 1:
+                # last layer and gap == 1
+                layers.append(nn.AdaptiveAvgPool2d(1)) # average pooling
+
+            size //= 2
+            total_layers += fb.max_depth
+            C_in = C_out
+            if b < self.B-2:
+                C_out *= 2 # doubling except for last block
+
+        print("Last featuremap size = {}".format(size))
+        print("Total layers = {}".format(total_layers))
+
+        if gap == 2:
+            layers.append(nn.Conv2d(C_out, n_classes, 1, padding=0)) # 1x1 conv
+            layers.append(nn.AdaptiveAvgPool2d(1)) # gap
+            layers.append(Flatten())
+        else:
+            layers.append(Flatten())
+            layers.append(nn.Linear(C_out * size * size, n_classes)) # fc layer
+
+        self.layers = layers
+
+        # initialization
+        if init != 'torch':
+            initialize_ = {
+                'xavier': nn.init.xavier_uniform_,
+                'he': nn.init.kaiming_uniform_
+            }[init]
+
+            for n, p in self.named_parameters():
+                if p.dim() > 1: # weights only
+                    initialize_(p)
+                else: # bn w/b or bias
+                    if 'bn.weight' in n:
+                        nn.init.ones_(p)
+                    else:
+                        nn.init.zeros_(p)
+```
+There are three main section:
+1. parameters initialization
+2. layer creations
+3. layer initialization
+
+The first one is fairly trivial, let's take a look at the layer creation
+
+```python
+        layers = nn.ModuleList()
+        C_out = init_channels
+        total_layers = 0
+        for b, p_dropout in enumerate(dropout_probs):
+            print("[block {}] Channel in = {}, Channel out = {}".format(b, C_in, C_out))
+            fb = FractalBlock(n_columns, C_in, C_out, p_ldrop, p_dropout,
+                              pad_type=pad_type, doubling=doubling, dropout_pos=dropout_pos)
+            layers.append(fb)
+            if gap == 0 or b < self.B-1:
+                # Originally, every pool is max-pool in the paper (No GAP).
+                layers.append(nn.MaxPool2d(2))
+            elif gap == 1:
+                # last layer and gap == 1
+                layers.append(nn.AdaptiveAvgPool2d(1)) # average pooling
+
+            size //= 2
+            total_layers += fb.max_depth
+            C_in = C_out
+            if b < self.B-2:
+                C_out *= 2 # doubling except for last block
+
+        print("Last featuremap size = {}".format(size))
+        print("Total layers = {}".format(total_layers))
+
+        if gap == 2:
+            layers.append(nn.Conv2d(C_out, n_classes, 1, padding=0)) # 1x1 conv
+            layers.append(nn.AdaptiveAvgPool2d(1)) # gap
+            layers.append(Flatten())
+        else:
+            layers.append(Flatten())
+            layers.append(nn.Linear(C_out * size * size, n_classes)) # fc layer
+
+        self.layers = layers
+```
+
+There is a couple of weird paradigm in this code throughout, like I mentioned earlier this isn't Pytorch official documentation level of clarity.
+
+First off we will creat the FractalBlock followed by the pooling layers (we're iterating on the dropout_probs to know how many blocks.)
+
+It could be summarize as:
+```python
+        for block in blocks:
+            fractal_block = FractalBlock(RIGHT_PARAMETERS)
+            layers.append(fractal_block)
+            layers.append(nn.RIGHT_POOLING_LAYER)
+```
+
+Once we are done with creating the fractal block, we create the prediction layer at the end:
+```python
+        if gap == 2:
+            layers.append(nn.Conv2d(C_out, n_classes, 1, padding=0)) # 1x1 conv
+            layers.append(nn.AdaptiveAvgPool2d(1)) # gap
+            layers.append(Flatten())
+        else:
+            layers.append(Flatten())
+            layers.append(nn.Linear(C_out * size * size, n_classes)) # fc layer
+
+        self.layers = layers
+```
+Here there is two flavor, a 1x1 convolution or a linear fully connected layer (both are somewhat equivalent).
+
+
+Then we have the initialization section:
+```python
+        # initialization
+        if init != 'torch':
+            initialize_ = {
+                'xavier': nn.init.xavier_uniform_,
+                'he': nn.init.kaiming_uniform_
+            }[init]
+
+            for n, p in self.named_parameters():
+                if p.dim() > 1: # weights only
+                    initialize_(p)
+                else: # bn w/b or bias
+                    if 'bn.weight' in n:
+                        nn.init.ones_(p)
+                    else:
+                        nn.init.zeros_(p)
+```
+Altought the structure is pretty weird here, we do basic inialization on a layer by layer basis.
+
+Let's take a look at the forward function now:
+
+### FractalNet | forward
+```python
+    def forward(self, x, deepest=False):
+        if deepest:
+            assert self.training is False
+
+        GB = int(x.size(0) * self.gdrop_ratio)
+        out = x
+
+        global_cols = None
+        for layer in self.layers:
+            if isinstance(layer, FractalBlock):
+                if not self.consist_gdrop or global_cols is None:
+                    global_cols = np.random.randint(0, self.n_columns, size=[GB])
+
+                out = layer(out, global_cols, deepest=deepest)
+            else:
+                out = layer(out)
+
+        return out
+```
+A few thing are interesting here, but one important thing to remember is that this is code used to generate specific result. It's a bit convoluted.
+
+The first thing of importance here is this variable:
+```python
+        GB = int(x.size(0) * self.gdrop_ratio)
+```
+Which can be understood as the Global_Batch (GB). It's the size of the batch that global_drop_path should drop.
+Local path will be the remainder of that batch in the fractal block.
+
+Then we iterate layer by layer, if we aren't in a fractal block it's fine we just put the out inside the layer (pooling or prediction).
+
+However, if it's a fractalblock layer we will do the following:
+```python
+    global_cols = np.random.randint(0, self.n_columns, size=[GB])
+    out = layer(out, global_cols, deepest=deepest)
+```
+Note: Here I'm disregarding the `self.consist_gdrop` variable as it's use only when the global_drop_path is consistant throughout and where we only take 1 global path out.
+
+Anyway, the first line will select 1 column index for **per sample** that we are part of the Global_Batch.
+The second line will take this array of global drop path column along with the input and push it forward.
+
+And that's basically it, the bulk of the work will happen in the FractalBlock.
+However, it's important to keep in mind the few variables that appears in FractalNet.
+
+Let's explore the FractalBlock now.
 
 ## FractalBlock
 A fractal block is a repeating block containing the different columnar path inside a fractalnet.
-These block are followed by the pooling layers and are repeating in exactly the same way multiple time (B time actually).
-
 
 ```python
 class FractalBlock(nn.Module):
