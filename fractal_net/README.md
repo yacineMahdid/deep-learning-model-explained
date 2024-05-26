@@ -1,7 +1,5 @@
 # Fractal Net
 The code was taken and modified from the [following repository](https://github.com/khanrc/pt.fractalnet/tree/master).
-An important thing to keep in mind with this code is that the drop path is done on a per sample basis, not on a per batch basis.
-Meaning that drop path will be applied within a batch and cut the sample into some % doing global drop path and the rest will be local drop path.
 
 The model is used in the following manner at a high level:
 ```python
@@ -22,6 +20,15 @@ As a disclaimer before we jump into the main code, the FractalNet architecture i
 There are branching paths within a FractalBlock and there isn't the same amount of element within a given columns.
 
 Therefore, programmatically we'll need to work with a grid that we will populate with information that will help flag which region of the grid has something in a given path.
+
+Like the following image (will come up again below):
+
+![Fractal Block](images/fractal_block.png)
+
+**Note about Drop Path:** 
+An important thing to keep in mind with this code is that the drop path is done on a per sample basis, not on a per batch basis.
+
+Meaning that drop path will be applied within a batch and cut the sample into some % doing global drop path and the rest will be local drop path.
 
 Let's look at each of the element starting with FractalNet:
 
@@ -133,14 +140,15 @@ Parameters are:
     - data_shape: (C, H, W, n_classes). e.g. (3, 32, 32, 10) - CIFAR 10.
     - n_columns: the number of columns
     - init_channels: the number of out channels in the first block
-    - p_ldrop: local drop prob (!!! this is for local drop path)
-    - dropout_probs: dropout probs (list) (!!! This is for regular drop out)
-    - gdrop_ratio: global droppath ratio (!!! This is for global drop path)
+    - p_ldrop: local drop prob **(!!! this is for local drop path)**
+    - dropout_probs: dropout probs (list) **(!!! This is for regular drop out)**
+    - gdrop_ratio: global droppath ratio **(!!! This is for global drop path)**
     - consist_gdrop
     - dropout_pos: the position of dropout
         - CDBR (default): conv-dropout-BN-relu
         - CBRD: conv-BN-relu-dropout
         - FD: fractal_block-dropout
+
     (less important parameters)
     - gap: pooling type for last block
     - init: initializer type
@@ -148,6 +156,7 @@ Parameters are:
     - doubling: if True, doubling by 1x1 conv in front of the block.
 
 We'll see most of these reappering multiple time throughout the downstream code.
+
 Let's take a look at the constructor first:
 
 ### FractalNet | init
@@ -240,7 +249,7 @@ There are three main section:
 2. layer creations
 3. layer initialization
 
-The first one is fairly trivial, let's take a look at the layer creation
+The first one is fairly trivial, so let's jump directly to layer creation
 
 ```python
         layers = nn.ModuleList()
@@ -280,9 +289,9 @@ The first one is fairly trivial, let's take a look at the layer creation
 
 There is a couple of weird paradigm in this code throughout, like I mentioned earlier this isn't Pytorch official documentation level of clarity.
 
-First off we will creat the FractalBlock followed by the pooling layers (we're iterating on the dropout_probs to know how many blocks.)
+First off we will create the FractalBlock followed by the pooling layers (we're iterating on the dropout_probs to know how many blocks)
 
-It could be summarize as:
+The above could be summarize as:
 ```python
         for block in blocks:
             fractal_block = FractalBlock(RIGHT_PARAMETERS)
@@ -348,7 +357,6 @@ Let's take a look at the forward function now:
 
         return out
 ```
-A few thing are interesting here, but one important thing to remember is that this is code used to generate specific result. It's a bit convoluted.
 
 The first thing of importance here is this variable:
 ```python
@@ -642,7 +650,7 @@ There are a few weird variables that aren't so well documented in there which ar
 ```
 - The doubler is the 1x1 convolution that we add in very specific case.
 - max_depth is the formula 2^(C-1) that tells us the max depth in a block, it depends on C which is the number of columns.
-- count is an array where the index represent the depth in the fractal block. This will be used to count the number of convolution block we have per depth (in turn useful for the join operation)
+- count is an array where the index represent the depth in the fractal block. This will be used to count the number of convolution block we have per depth or rows (in turn useful for the join operation)
 
 for drop out we are simply doing it if it's FD block:
 ```python
@@ -652,8 +660,7 @@ for drop out we are simply doing it if it's FD block:
         else:
             self.dropout = None
 ```
-Notice here that we aren't going to add that to our layer list strangely enough.
-self.dropout however will make a comeback in the forward function.
+Notice here that we aren't going to add that to our layer list. self.dropout however will make a comeback in the forward function.
 
 #### FractalBlock | Init | Columns Creation
 ```python
@@ -710,7 +717,122 @@ There are some more details about the doubling in there, but for the overall arc
 So, at the end of these iterations we should have a columns grid filled up with None of Convolutional filters.
 A counts array per row that sum the amount of convolutional filters.
 
-Let's take a look at the two auxiliary function `join` and `drop_mask`.
+Let's jump down to the forward function, which is crucial to understand how we are operating the joins and drop path.
+
+### FractalBlock | forward
+```python
+    def forward(self, x, global_cols, deepest=False):
+        """
+        global_cols works only in training mode.
+        """
+        out = self.doubler(x) if self.doubler else x
+        outs = [out] * self.n_columns
+        for i in range(self.max_depth):
+            st = self.n_columns - self.count[i]
+            cur_outs = [] # outs of current depth
+            if deepest:
+                st = self.n_columns - 1 # last column only
+
+            for c in range(st, self.n_columns):
+                cur_in = outs[c] # current input
+                cur_module = self.columns[c][i] # current module
+                cur_outs.append(cur_module(cur_in))
+
+            # join
+            #print("join in depth = {}, # of in_join = {}".format(i, len(cur_out)))
+            joined = self.join(cur_outs, global_cols)
+
+            for c in range(st, self.n_columns):
+                outs[c] = joined
+
+        if self.dropout_pos == 'FD' and self.dropout:
+            outs[-1] = self.dropout(outs[-1])
+
+        return outs[-1] # for deepest case
+```
+Notice here that we hav eour global_cols from FractalNet that made a comeback.
+
+In this architecture, we will be feeding the inputs in lockstep across all columns, there are some very tricky flow here but we'll go through it.
+
+First:
+```python
+        outs = [out] * self.n_columns
+```
+We are multiplying x (which is equal to out) n_columns time before jumping into the iterations.
+
+At the end we have:
+```python
+        if self.dropout_pos == 'FD' and self.dropout:
+            outs[-1] = self.dropout(outs[-1])
+```
+Where it's basically drop out applied at the end completly of the depth.
+
+The only thing we need to return is the last outs we have at the deepest level of our fractalBlock.
+
+In between is the real work:
+```python
+        for i in range(self.max_depth):
+            st = self.n_columns - self.count[i]
+            cur_outs = [] # outs of current depth
+            if deepest:
+                st = self.n_columns - 1 # last column only
+
+            for c in range(st, self.n_columns):
+                cur_in = outs[c] # current input
+                cur_module = self.columns[c][i] # current module
+                cur_outs.append(cur_module(cur_in))
+
+            # join
+            joined = self.join(cur_outs, global_cols)
+
+            for c in range(st, self.n_columns):
+                outs[c] = joined
+```
+
+The first variable is pretty important:
+```python
+st = self.n_columns - self.count[i]
+```
+No idea what `st` stand for, but in a nutshell by doing `n_columns - count[depth]` we are saying where we should be doing the join at which index.
+The image in the original paper is a bit confusing and stylized, because the grid is more clearer like this:
+![Fractal Block](images/fractal_block.png)
+
+So at the first iteration in this example at the highest depth, we'll have:
+`st = 4 - 1 = 3`
+
+we'll then do
+```python
+for c in range(3, 4): #AKA ONE ITERATION
+    cur_in = outs[3] # current input
+    cur_module = self.columns[3][0] # current module
+    cur_outs.append(cur_module(cur_in))
+
+joined = self.join(cur_outs, global_cols)
+
+for c in range(3, 4): #AKA ONE ITERATION
+    outs[3] = joined
+```
+
+So this simplify to:
+```python
+cur_in = outs[3] # current input
+cur_module = self.columns[3][0] # current module
+cur_outs.append(cur_module(cur_in))
+joined = self.join(cur_outs, global_cols)
+outs[3] = joined
+```
+
+- We take the input out of our array of output
+- we get the right module out of our grid of module (will not be None) thanks to `st` variable
+- we jam the input into the layer and append the output to that to our array of current output (a singular element array in this example)
+- then we call join with the global_cols variable (will check in a few)
+- The output of that is that added as the outs for the next iteration.
+
+In the first example it's trivial since there is no iterations, but we get the idea.
+
+Something very important to note in the drawing is that **There is always a join happening at all depth**. They haven't drawn it in the image because some of the join are happening on a singular convolutional element. The element wise mean of one element is the element.
+
+Therefore, in the code, this is why you see the join happening at all time, it doesn't change anything if it's for a singular element.
 
 ### FractalBlock | join
 ```python
@@ -796,50 +918,95 @@ code looks like this:
         drop_mask = np.concatenate((gdrop_mask, ldrop_mask), axis=1)
         return torch.from_numpy(drop_mask)
 ```
-
-
-The whole idea of this drop_mask function is to generate a mask on the network in order to turn off some of the network columns like in the paper.
-
 The parameters is:
 - `B`: the batch size
 - `global_cols`: dictate which column to odrop
 - `n_cols`: the number of columns to mask
 
-In this specific case we generate
+Remember here, we are doing per-sample drop path. Meaning that we will split the full batch of data being fed into a section that will have global drop path applied and a section with local drop path applied.
 
+GB is the amount of the Global Drop Path Batch (which we extablished all the way back to FractalNet class)
 
-
-### FractalBlock | forward
+That mask creation is then split into two section, one for global drop path and one for local drop path:
 ```python
-    def forward(self, x, global_cols, deepest=False):
-        """
-        global_cols works only in training mode.
-        """
-        out = self.doubler(x) if self.doubler else x
-        outs = [out] * self.n_columns
-        for i in range(self.max_depth):
-            st = self.n_columns - self.count[i]
-            cur_outs = [] # outs of current depth
-            if deepest:
-                st = self.n_columns - 1 # last column only
+# global drop mask
+GB = global_cols.shape[0]
 
-            for c in range(st, self.n_columns):
-                cur_in = outs[c] # current input
-                cur_module = self.columns[c][i] # current module
-                cur_outs.append(cur_module(cur_in))
+# MAKE THE GLOBAL DROP MASK
 
-            # join
-            #print("join in depth = {}, # of in_join = {}".format(i, len(cur_out)))
-            joined = self.join(cur_outs, global_cols)
+# local drop mask
+LB = B - GB
+# MAKE THE LOCAL DROP MASK
 
-            for c in range(st, self.n_columns):
-                outs[c] = joined
+drop_mask = np.concatenate((gdrop_mask, ldrop_mask), axis=1) # CONCATENATE THE TWO!
 
-        if self.dropout_pos == 'FD' and self.dropout:
-            outs[-1] = self.dropout(outs[-1])
-
-        return outs[-1] # for deepest case
+return torch.from_numpy(drop_mask)
 ```
+
+Let's check them out one by one:
+```python
+        GB = global_cols.shape[0]
+
+        # calc gdrop cols / samples
+        gdrop_cols = global_cols - (self.n_columns - n_cols)
+        gdrop_indices = np.where(gdrop_cols >= 0)[0]
+
+        # gen gdrop mask
+        gdrop_mask = np.zeros([n_cols, GB], dtype=np.float32)
+        gdrop_mask[gdrop_cols[gdrop_indices], gdrop_indices] = 1.
+```
+
+First, we are subtracting from the random array the following amount: `(self.n_columns - n_cols)`.
+This specific formulation is to avoid cutting off the signal of region that have nothing to do with the current join.
+
+In our example with a singular element at the last column we would have `4-1` which gives us 3.
+If the global_cols drop for a sample was 3, we would have `3-3=0`
+
+This is then used to get a global_drop_path_indice which `gdrop_indices = np.where(gdrop_cols >= 0)[0]` which in that case it would only be true for global_cols which had the last columns index randomly sampled.
+
+Finally, with that indice, we are able to flip the right zero into 1s to **keep alive** the column that is mentioned by global_cols.
+Super important here, the index we are randomly selecting is the one that is kept alive, not the one that we cut off.
+
+Therefore, the mask we are creating is done in the following manner:
+1. put everything as dead signal (aka 0s)
+2. save some signal by putting 1 instead of 0s at the right spots.
+
+This is happening on a per sample basis throughout the whole batch, so at the end of that process we'll have a 2D array that is equal to the BATCH_SIZE-GB.
+
+```python
+        # local drop mask
+        LB = B - GB
+        ldrop_mask = np.random.binomial(1, 1.-self.p_ldrop, [n_cols, LB]).astype(np.float32)
+        alive_count = ldrop_mask.sum(axis=0)
+        
+        # resurrect all-dead case
+        dead_indices = np.where(alive_count == 0.)[0]
+        ldrop_mask[np.random.randint(0, n_cols, size=dead_indices.shape), dead_indices] = 1.
+
+        drop_mask = np.concatenate((gdrop_mask, ldrop_mask), axis=1)
+        return torch.from_numpy(drop_mask)
+```
+
+For local drop path, we are doing it on the rest of the batch size.
+
+in this section: `ldrop_mask = np.random.binomial(1, 1.-self.p_ldrop, [n_cols, LB]).astype(np.float32)`
+We are creating a 2D grid of 1 and 0 with the probability p_ldrop.
+
+We don't want to have 1 row that is all dead, we should at least have 1 signal that moves through.
+
+This is what this part is doing:
+```python
+        dead_indices = np.where(alive_count == 0.)[0]
+        ldrop_mask[np.random.randint(0, n_cols, size=dead_indices.shape), dead_indices] = 1.
+```
+We are checking across sample if we have a spot where we simply killed off all signal.
+At these indices we will randomly flip 1 column back on.
+
+Finally we concatenate both the global_drop_mask and the local_drop_mask into 1 mega mask that cover the whole batch!
+
+Hardest part is done now, let's take a look at the convolutional block!
+
+
 ## ConvBlock
 Here the Convolution Block is a short-hand class that has the convolution + drop out  + batch normalization and relu mix.
 It's easier to package this into a singular entity since the fractal expension rule will be based off this.
