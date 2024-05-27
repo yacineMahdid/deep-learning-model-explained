@@ -750,7 +750,7 @@ Let's jump down to the forward function, which is crucial to understand how we a
 
         return outs[-1] # for deepest case
 ```
-Notice here that we hav eour global_cols from FractalNet that made a comeback.
+Notice here that we have our global_cols from FractalNet that made a comeback.
 
 In this architecture, we will be feeding the inputs in lockstep across all columns, there are some very tricky flow here but we'll go through it.
 
@@ -758,12 +758,15 @@ First:
 ```python
         outs = [out] * self.n_columns
 ```
-We are multiplying x (which is equal to out) n_columns time before jumping into the iterations.
+We are multiplying x (which is equal to out) n_columns time before jumping into the iterations. Effectively feeding each of the columns the initial input.
+From now on the input to the fractal block will be an array.
 
 At the end we have:
 ```python
         if self.dropout_pos == 'FD' and self.dropout:
             outs[-1] = self.dropout(outs[-1])
+
+        return outs[-1] # for deepest case
 ```
 Where it's basically drop out applied at the end completly of the depth.
 
@@ -795,6 +798,7 @@ st = self.n_columns - self.count[i]
 ```
 No idea what `st` stand for, but in a nutshell by doing `n_columns - count[depth]` we are saying where we should be doing the join at which index.
 The image in the original paper is a bit confusing and stylized, because the grid is more clearer like this:
+
 ![Fractal Block](images/fractal_block.png)
 
 So at the first iteration in this example at the highest depth, we'll have:
@@ -919,7 +923,7 @@ code looks like this:
         return torch.from_numpy(drop_mask)
 ```
 The parameters is:
-- `B`: the batch size
+- `B`: the batch size (!!! Note the number of block like in the paper)
 - `global_cols`: dictate which column to odrop
 - `n_cols`: the number of columns to mask
 
@@ -942,6 +946,7 @@ drop_mask = np.concatenate((gdrop_mask, ldrop_mask), axis=1) # CONCATENATE THE T
 
 return torch.from_numpy(drop_mask)
 ```
+At the end the two mask are concatenated which will cover the full batch
 
 Let's check them out one by one:
 ```python
@@ -999,7 +1004,7 @@ This is what this part is doing:
         dead_indices = np.where(alive_count == 0.)[0]
         ldrop_mask[np.random.randint(0, n_cols, size=dead_indices.shape), dead_indices] = 1.
 ```
-We are checking across sample if we have a spot where we simply killed off all signal.
+We are checking across sample if we have a spot where we simply killed off all signal across a row.
 At these indices we will randomly flip 1 column back on.
 
 Finally we concatenate both the global_drop_mask and the local_drop_mask into 1 mega mask that cover the whole batch!
@@ -1052,7 +1057,6 @@ class ConvBlock(nn.Module):
 
         return out
 ```
-Side note: great documentation here.
 - We have the constructor here
 - forward function.
 
@@ -1127,3 +1131,5 @@ The forward function is straightforward:
 - we either do drop out now or after the batch normalization
 - we do batch normalization then ReLU
 - return the output of all this.
+
+And voila, this is FractalNet 🎉
