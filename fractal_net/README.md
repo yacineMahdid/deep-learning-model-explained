@@ -136,6 +136,7 @@ class FractalNet(nn.Module):
         return out
 ```
 
+```
 Parameters are:
     - data_shape: (C, H, W, n_classes). e.g. (3, 32, 32, 10) - CIFAR 10.
     - n_columns: the number of columns
@@ -154,7 +155,7 @@ Parameters are:
     - init: initializer type
     - pad_type: padding type of conv
     - doubling: if True, doubling by 1x1 conv in front of the block.
-
+```
 We'll see most of these reappering multiple time throughout the downstream code.
 
 Let's take a look at the constructor first:
