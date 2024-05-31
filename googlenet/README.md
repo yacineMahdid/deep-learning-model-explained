@@ -1,4 +1,4 @@
-# GoogleNet
+# GoogLeNet
 The code is a modified version of the official [googlenet implementation](https://github.com/pytorch/vision/blob/main/torchvision/models/googlenet.py) on Pytorch.
 
 This code is fairly verbose, but relatively clean, let's go top API to bottom internal.
@@ -52,13 +52,13 @@ def googlenet(*, weights: Optional[GoogLeNet_Weights] = None, progress: bool = T
     return model
 ```
 
-We start with the above which is fairly standard.
+We start with the above which is fairly standard for a Pytorch model.
 
 The part that matter the most is this one:
 ```python
     model = GoogLeNet(**kwargs)
 ```
-Which simply call GoogLeNet class to create the model and shove all of the parameters. The rest is mostly just to load in the  weights.
+Which simply call GoogLeNet class to create the model and shove all of the parameters we already gave. The rest is mostly just to load in the weights with the right format..
 
 Before getting into GoogLeNet class, let's explore the Inception module.
 
@@ -124,11 +124,11 @@ inception_block(192, 64, 96, 128, 16, 32, 32)
 Each of these numbers is mapped to the following variables:
 - in_channels: number of input channel
 - ch1x1: output of the first 1x1 conv branch
-- ch3x3red: input of the 1x1 conv for second branch
+- ch3x3red: output of the 1x1 conv for second branch
 - ch3x3: int: output for the second branch 3x3 conv
 - ch5x5red: int: output for the 1x1 conv for the 3rd branch 
 - ch5x5: int: output of the 5x5 in the 3rd branch
-- pool_proj: output channel of the convolution on the fourth branch (maxpool + 1x1 conv)
+- pool_proj: output channel of the 1x1 convolution on the fourth branch that includes the maxpooling.
 
 These variables and the way they are structured are connected to the following figure in the paper:
 
@@ -152,13 +152,14 @@ in the constructor we are simply initializing the different branch variable whic
         return torch.cat(outputs, 1)
 ```
 
-The main forward function will just call the private `_forward` function and take it's output to do the filter concatenation operation on the 1st dimention.
+The main forward function will just call the private `_forward` function and take it's output to do the filter concatenation operation on the 1st dimention (green block in the inception figure).
 
 The `_forward` function will send the input through the many branches and return the array.
 
-There is a parameter called `conv_block` which is never given throughout the GoogLeNet architecture, instead it's using the `BasicConv2D` class.
-That is the convolution we are using throughout every branches.
+To note: There is a parameter called `conv_block` which is never given throughout the GoogLeNet architecture, instead it's using the `BasicConv2D` class.
+That is the convolution we are using throughout every branches by default.
 
+The reason it's set up this way is because the way BasicConv2D is setup includes batch normalization which didn't exist at the time GoogLeNet was built. Therefore, if you wanted to use your own convolution block you can define it as a class and send it through the constructors for the Inception module.
 
 BasicConv2D is fairly straightforward, let's take a look at it.
 
@@ -176,8 +177,7 @@ class BasicConv2d(nn.Module):
         return F.relu(x, inplace=True)
 ```
 
-What we are doing in this class is simply use the tried and true CONV-BATCHNORM-RELU mix.
-An important thing to note is that batch norma wasn't invented with the first GoogLeNet, so if you want to not use batch norm you can just give your own convolution filter to the architectur einstead.
+What we are doing in this class is simply use the tried and true CONV-BATCHNORM-RELU recipe to use.
 
 Now that we have an understanding of how Inception + BasicConv2D works, let's take a look at the auxiliary classification head called `InceptionAux`.
 
@@ -222,22 +222,24 @@ class InceptionAux(nn.Module):
 
 ![InceptionAux](images/inception_aux.png)
 
+and the recipe to construct it is as follow:
+
+![Inception Auxiliary Head Recipe](images/auxiliary_head_recipe.png)
+
 Basically it's:
 1. average pooling
 2. 1x1 convolution
-3. fully connected layer
+3. fully connected layer (with drop out)
 4. fully connected layer
-5. softmax (with drop out in there)
+5. softmax
 
-The constructor basically set up the input channel for this classification layer along with givin it the number of class to output.
+The constructor basically set up the input channel for this classification layer along with giving it the number of class to output.
 
-The forward function will do the motion discussed above.
+The forward function will do the motion discussed above. Note that you can also replace here the convolution block, otherwise it will use the BasicConv2D by default.
 
 Okay now that we have all the pieces, let's put it all together on the GoogLeNet class!
 
 ## GoogLeNet
-Finally, the GoogLeNet class bring all of this together:
-
 ```python
 class GoogLeNet(nn.Module):
     __constants__ = ["aux_logits", "transform_input"]
@@ -399,7 +401,7 @@ The main section of interest are:
 2. forward function
 3. internal forward function
 
-The whole class is big because it's very unrolled, there is no for loop to be seen that will repeat the same creation over and over (which in my opinion is more readable)
+The whole class is big because it's very unrolled, there is no for loop to be seen that will repeat the same creation over and over (which in my opinion is more readable).
 
 Let's go piece by piece.
 
@@ -418,8 +420,8 @@ Let's go piece by piece.
             return self.eager_outputs(x, aux2, aux1)
 ```
 
-The forward function will basically call the forward function, get the 3 output from all three classification heads and return them.
-The format of the return, isn't much important for the understanding of the implementation.
+The forward function will basically call the `_forward` function, get the 3 output from all three classification heads and return them.
+The format of the return, isn't much important for the understanding of the implementation, but you will always have a tuple of 3 output from each head.
 
 ### GoogLeNet | init
 ```python
